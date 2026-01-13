@@ -3,7 +3,6 @@
 实现论文《Dual Classifier Adaptation: Source-Free UDA via Adaptive Pseudo-labels Learning》
 在 Office-Home 65 类场景下的无源域自适应阶段。
 """
-
 import argparse
 import os, sys
 import os.path as osp
@@ -23,6 +22,8 @@ import torch.nn.functional as F
 from utils import *
 import os
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+
+import clip
 
 
 def op_copy(optimizer):
@@ -104,6 +105,7 @@ def train_target_mme(args):
     netC = network_new.classifier_C(type=args.layer, class_num=args.class_num, bottleneck_dim=args.bottleneck).to(args.device)
     netD = network_new.classifier_D(type=args.layer, feature_dim=netG.in_features, class_num=args.class_num).to(args.device)
 
+
     args.modelpath = args.output_dir_src + "/source_G" + ".pt"
     netG.load_state_dict(torch.load(args.modelpath))
     args.modelpath = args.output_dir_src + "/source_F" + ".pt"
@@ -112,6 +114,15 @@ def train_target_mme(args):
     netC.load_state_dict(torch.load(args.modelpath))
     args.modelpath = args.output_dir_src + "/source_D" + ".pt"
     netD.load_state_dict(torch.load(args.modelpath))
+
+    # === 【新增 2】加载并冻结 CLIP 模型 ===
+    print("Loading CLIP model...")
+    # 使用 ViT-B/16 效果最好，也最常用
+    clip_model, preprocess = clip.load("ViT-B/16", device=args.device)
+    clip_model.eval()  # 设置为评估模式
+    for param in clip_model.parameters():
+        param.requires_grad = False  # 冻结参数，不更新 CLIP
+    print("CLIP model loaded!")
 
     netC.eval()
     netD.train()
@@ -144,6 +155,20 @@ def train_target_mme(args):
     max_iter = (args.max_epoch) * len(dset_loaders["target"])
     interval_iter = max_iter // args.interval
     # len(dset_loaders["target"]) = 16
+
+
+    # 在训练循环之前
+    classname_path = "data/officehome/classname.txt"
+    with open(classname_path, 'r') as f:
+        class_names = [line.strip() for line in f.readlines()]
+
+    # 生成 CLIP 文本 prompt 并预计算 text_features（只需一次）
+    prompts = [f"a photo of a {name.replace('_', ' ')}" for name in class_names]
+    text_tokens = clip.tokenize(prompts).to(args.device)
+    with torch.no_grad():
+        text_features = clip_model.encode_text(text_tokens)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    print(f"CLIP text features ready: {text_features.shape}")
 
     while iter_num < max_iter:
         try:
@@ -241,6 +266,39 @@ def train_target_mme(args):
             # exp(-variance): 差异越大，权重越小（接近0）；差异越小，权重越大（接近1）
             exp_variance1 = torch.mean(torch.exp(-variance1))  # 平均不确定性权重
             exp_variance2 = torch.mean(torch.exp(-variance2))
+
+            # threshold = 0.5
+            # 改成动态阈值
+            threshold = variance1.mean() + variance1.std() * 1
+            high_discrepancy_mask = variance1 > threshold  # 布尔掩码
+            topk_indices = torch.where(high_discrepancy_mask)[0] 
+
+            if len(topk_indices) > 0:  # 只有存在高分歧样本时才触发 CLIP
+                clip_input = F.interpolate(inputs_test[topk_indices], size=(224, 224), mode='bicubic')
+                # 开始推理
+                
+                with torch.no_grad():
+                    image_features = clip_model.encode_image(clip_input)
+                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                    # text_features 已在循环外预计算，直接使用
+
+                    # 图像特征和文本特征做点积 → 相似度 → 分类logits
+                    clip_logits = image_features @ text_features.T  # [k, 65]
+                    clip_probs = F.softmax(clip_logits * 100, dim=1)  # 乘100是CLIP的温度系数
+                    # clip_logits 是余弦相似度（范围 -1 到 1），乘 100 是因为 softmax 需要较大的数值差异才能产生明显的概率分布，否则所有类别概率都接近 1/65
+
+                # ===== 计算 CLIP 蒸馏损失（必须在 no_grad 外面！）=====
+                # 让两个分类器向 CLIP 的预测靠拢
+                log_sm = nn.LogSoftmax(dim=1)
+                # .detach() 确保 CLIP 不被更新，但梯度能流向 outputs1/outputs2
+                loss_clip = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='batchmean') + \
+                            F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='batchmean')
+            else:
+                loss_clip = torch.tensor(0.0).to(args.device)
+                
+            # 把 CLIP 损失加到总损失（放到 total_loss2 += loss_cs 之后）
+            total_loss2 += 0.1 * loss_clip  # 0.1 是权重，可以调
+
             
             # 加权损失: 分类损失 × 不确定性权重 + 正则化项
             # 如果两个分类器分歧大，伪标签不可靠，分类损失权重小
@@ -398,7 +456,7 @@ if __name__ == "__main__":
         names = ["amazon", "dslr", "webcam"]
         args.class_num = 31
     elif args.dset == "officehome":
-        names = ["Art", "Clipart", "RealWorld"]
+        names = ["Art", "Clipart", "Product", "RealWorld"]
         args.class_num = 65
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id

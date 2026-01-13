@@ -317,7 +317,7 @@ if __name__ == "__main__":
         names = ["amazon", "dslr", "webcam"]
         args.class_num = 31
     elif args.dset == "officehome":
-        names = ["Art", "Clipart", "RealWorld"]
+        names = ["Art", "Clipart", "Product", "RealWorld"]
         args.class_num = 65
 
 
