@@ -1,7 +1,10 @@
-/.DS_Store
+.DS_Store
 /.idea
 /__pycache__
 /ckps
-/data
+/data/officehome/Art
+/data/officehome/Clipart
+/data/officehome/RealWorld
+/data/office/domain_adaptation_images
 */__pycache__
 *.pyc
