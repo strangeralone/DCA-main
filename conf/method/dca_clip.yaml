@@ -1,0 +1,31 @@
+# DCA + CLIP 方法配置
+# Dual Classifier Adaptation with CLIP guidance
+
+name: "dca_clip"
+trainer: "core.dca_clip"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45
+cls_par: 0.15
+alpha: 0.5
+mix: 0.5
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40
+  smooth: 0.1
+  split: 0.9
+  trte: "val"
+  interval: 4
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15
+  interval: 10
+
+# ========== CLIP 特有配置 ==========
+clip:
+  model: "ViT-B/16"        # CLIP 模型: ViT-B/16, ViT-B/32, RN50
+  loss_weight: 0.1         # CLIP 蒸馏损失权重
+  threshold_std: 1.0       # 高分歧样本筛选的标准差倍数
+  temperature: 100         # CLIP softmax 温度系数

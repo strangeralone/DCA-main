@@ -1,0 +1,24 @@
+# DCA 方法配置
+# Dual Classifier Adaptation (纯 DCA，不含 CLIP)
+
+name: "dca"
+trainer: "core.dca"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45        # 熵损失权重
+cls_par: 0.15      # 伪标签分类损失权重
+alpha: 0.5         # 双分类器损失平衡系数 (loss = α*L1 + (2-α)*L2)
+mix: 0.5           # MixUp 损失权重
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40    # 训练轮数
+  smooth: 0.1      # 标签平滑参数
+  split: 0.9       # 训练/验证集划分比例
+  trte: "val"      # 训练评估模式: val / full
+  interval: 4      # 评估间隔 (max_epoch / interval)
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15    # 适应轮数
+  interval: 10     # 评估次数 (将 max_iter 分成多少段)

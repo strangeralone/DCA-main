@@ -1,0 +1,23 @@
+# DCA 项目默认配置
+# 全局通用参数
+
+# ========== 设备配置 ==========
+gpu_id: "0"
+device: "mps"  # cuda / mps / cpu
+seed: 2077
+worker: 4
+
+# ========== 训练配置 ==========
+batch_size: 64
+lr: 0.01
+
+# ========== 网络配置 ==========
+net: "resnet50"           # resnet50, resnet101
+bottleneck: 256           # 瓶颈层维度
+classifier: "bn"          # bn, ori
+layer: "dca"              # dca, linear, wn, mme
+epsilon: 1.0e-5
+
+# ========== 输出配置 ==========
+output_dir: "./ckps"
+savemodel: true

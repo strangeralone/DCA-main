@@ -1,5 +1,8 @@
-/.DS_Store
+.DS_Store
+/.vscode
 /.idea
 /__pycache__
 /ckps
 /data
+*/__pycache__
+*.pyc

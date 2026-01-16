@@ -1,0 +1,16 @@
+# Office-31 数据集配置
+# 31 类场景
+
+name: "office"
+class_num: 31
+
+# 域列表
+domains:
+  - "amazon"
+  - "dslr"
+  - "webcam"
+
+# 数据路径
+data_dir: "./data/office"
+suffix: "_31.txt"
+classname_file: null  # 暂无类名文件
