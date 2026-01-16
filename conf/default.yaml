@@ -3,12 +3,12 @@
 
 # ========== 设备配置 ==========
 gpu_id: "0"
-device: "mps"  # cuda / mps / cpu
+device: "cuda"  # cuda / mps / cpu
 seed: 2077
 worker: 4
 
 # ========== 训练配置 ==========
-batch_size: 64
+batch_size: 128
 lr: 0.01
 
 # ========== 网络配置 ==========
@@ -23,5 +23,5 @@ output_dir: "./ckps"
 savemodel: true
 
 # ========== 调试配置 ==========
-debug: false              # 启用调试模式（输出详细信息）
+debug: true              # 启用调试模式（输出详细信息）
 verbose_loss: true        # 输出所有损失项
