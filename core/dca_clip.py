@@ -225,11 +225,14 @@ class DCAClipTrainer(DCATrainer):
             classifier_loss1 = nn.CrossEntropyLoss()(outputs1, pred1)
             classifier_loss2 = nn.CrossEntropyLoss()(outputs2, pred2)
             
-            # 不确定性加权
+            # 不确定性加权（添加数值稳定性处理）
             kl_distance = nn.KLDivLoss(reduction='none')
             log_sm = nn.LogSoftmax(dim=1)
-            variance1 = torch.sum(kl_distance(log_sm(outputs1), softmax_out2), dim=1)
-            variance2 = torch.sum(kl_distance(log_sm(outputs2), softmax_out1), dim=1)
+            # 避免 softmax 输出中有 0 导致 NaN
+            softmax_out1_stable = torch.clamp(softmax_out1, min=1e-8)
+            softmax_out2_stable = torch.clamp(softmax_out2, min=1e-8)
+            variance1 = torch.sum(kl_distance(log_sm(outputs1), softmax_out2_stable), dim=1)
+            variance2 = torch.sum(kl_distance(log_sm(outputs2), softmax_out1_stable), dim=1)
             exp_variance1 = torch.mean(torch.exp(-variance1))
             exp_variance2 = torch.mean(torch.exp(-variance2))
             
