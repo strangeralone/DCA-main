@@ -16,6 +16,7 @@ from torch.autograd import Variable, Function
 from utils import *
 import math, pdb
 import torch.nn.utils.weight_norm as weightNorm
+import warnings
 
 
 class GradientReverseFunction(Function):
@@ -102,6 +103,16 @@ res_dict = {
     "resnext101": models.resnext101_32x8d,  # ResNeXt-101
 }
 
+weights_dict = {
+    "resnet18": models.ResNet18_Weights.IMAGENET1K_V1,
+    "resnet34": models.ResNet34_Weights.IMAGENET1K_V1,
+    "resnet50": models.ResNet50_Weights.IMAGENET1K_V1,
+    "resnet101": models.ResNet101_Weights.IMAGENET1K_V1,
+    "resnet152": models.ResNet152_Weights.IMAGENET1K_V1,
+    "resnext50": models.ResNeXt50_32X4D_Weights.IMAGENET1K_V1,
+    "resnext101": models.ResNeXt101_32X8D_Weights.IMAGENET1K_V1,
+}
+
 
 class ResBase(nn.Module):
     """
@@ -118,7 +129,7 @@ class ResBase(nn.Module):
             res_name: ResNet模型名称（如'resnet50', 'resnet101'等）
         """
         super(ResBase, self).__init__()
-        model_resnet = res_dict[res_name](pretrained=True)  # 加载预训练的ResNet模型
+        model_resnet = res_dict[res_name](weights=weights_dict[res_name])  # 加载预训练的ResNet模型
 
         # 提取ResNet的各个组件（除了最后的全连接层）
         self.conv1 = model_resnet.conv1      # 第一个卷积层 (7x7, stride=2)

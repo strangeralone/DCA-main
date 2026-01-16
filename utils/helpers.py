@@ -43,7 +43,9 @@ def cal_acc(loader, netG, netF, netC, device="cuda"):
     accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
 
     matrix = confusion_matrix(all_label, torch.squeeze(predict).float())
-    acc = matrix.diagonal()/matrix.sum(axis=1) * 100
+    row_sums = matrix.sum(axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        acc = np.where(row_sums > 0, matrix.diagonal() / row_sums * 100, 0)
     aacc = acc.mean()
     aa = [str(np.round(i, 2)) for i in acc]
     acc = ' '.join(aa)
@@ -72,7 +74,9 @@ def cal_acc_easy(loader, netG, netC, device="cuda"):
     accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
 
     matrix = confusion_matrix(all_label, torch.squeeze(predict).float())
-    acc = matrix.diagonal()/matrix.sum(axis=1) * 100
+    row_sums = matrix.sum(axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        acc = np.where(row_sums > 0, matrix.diagonal() / row_sums * 100, 0)
     aacc = acc.mean()
     aa = [str(np.round(i, 2)) for i in acc]
     acc = ' '.join(aa)
