@@ -1,16 +1,26 @@
 #!/bin/bash
-# Office-Home 数据集所有域适应任务训练脚本
+# Office-Home 数据集所有域适应任务训练脚本（重构版）
+# 使用新的 main.py 统一入口
+#
+# 用法:
+#   ./run_all.sh [方法] [设备]
+#   ./run_all.sh dca cuda
+#   ./run_all.sh dca_clip mps
+#
 # 域索引: 0=Art, 1=Clipart, 2=Product, 3=RealWorld
-# 流程: 1. 先训练源域模型 2. 再做目标域适应
 
-# 设置设备 (cuda / mps / cpu)
-DEVICE="cuda"
+# 解析参数
+METHOD="${1:-dca}"
+DEVICE="${2:-cuda}"
 
 # 域名称（用于日志显示）
 DOMAINS=("Art" "Clipart" "Product" "RealWorld")
 
 echo "=========================================="
-echo "Office-Home Domain Adaptation Pipeline"
+echo "DCA Training Pipeline (Refactored)"
+echo "=========================================="
+echo "Method: $METHOD"
+echo "Device: $DEVICE"
 echo "=========================================="
 
 # ============================================
@@ -24,10 +34,10 @@ echo "=========================================="
 for s in 0 1 2 3; do
     echo ""
     echo "----------------------------------------"
-    echo "Training source model: ${DOMAINS[$s]} (--s $s)"
+    echo "Training source model: ${DOMAINS[$s]} (--source $s)"
     echo "----------------------------------------"
     
-    python train_source_65.py --s $s --t $s --device $DEVICE
+    python main.py --method $METHOD --dataset officehome --source $s --mode source --device $DEVICE
     
     if [ $? -ne 0 ]; then
         echo "Error: Source training for ${DOMAINS[$s]} failed!"
@@ -56,10 +66,10 @@ for s in 0 1 2 3; do
         
         echo ""
         echo "----------------------------------------"
-        echo "Adapting: ${DOMAINS[$s]} -> ${DOMAINS[$t]} (--s $s --t $t)"
+        echo "Adapting: ${DOMAINS[$s]} -> ${DOMAINS[$t]} (--source $s --target $t)"
         echo "----------------------------------------"
         
-        python train_target_65.py --s $s --t $t --device $DEVICE
+        python main.py --method $METHOD --dataset officehome --source $s --target $t --mode target --device $DEVICE
         
         if [ $? -ne 0 ]; then
             echo "Error: ${DOMAINS[$s]} -> ${DOMAINS[$t]} failed!"
@@ -73,4 +83,5 @@ done
 echo ""
 echo "=========================================="
 echo "All tasks completed!"
+echo "Output directory: ckps/officehome/$METHOD/"
 echo "=========================================="

@@ -1,0 +1,17 @@
+# Office-Home 数据集配置
+# 65 类场景
+
+name: "officehome"
+class_num: 65
+
+# 域列表
+domains:
+  - "Art"
+  - "Clipart"
+  - "Product"
+  - "RealWorld"
+
+# 数据路径
+data_dir: "./data/officehome"
+suffix: "_65.txt"
+classname_file: "classname.txt"

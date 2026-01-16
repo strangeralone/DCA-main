@@ -1,10 +1,8 @@
 .DS_Store
+/.vscode
 /.idea
 /__pycache__
 /ckps
-/data/officehome/Art
-/data/officehome/Clipart
-/data/officehome/RealWorld
-/data/office/domain_adaptation_images
+/data
 */__pycache__
 *.pyc
