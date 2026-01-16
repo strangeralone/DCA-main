@@ -33,6 +33,10 @@ class DCAClipTrainer(DCATrainer):
         
         self.clip_model = None
         self.text_features = None
+        
+        # 调试配置
+        self.debug = config.get('debug', False)
+        self.verbose_loss = config.get('verbose_loss', True)
     
     def _load_clip_model(self):
         """加载并冻结 CLIP 模型"""
@@ -77,6 +81,8 @@ class DCAClipTrainer(DCATrainer):
         log_file.write(f"  clip.loss_weight: {self.clip_loss_weight}\n")
         log_file.write(f"  clip.threshold_std: {self.clip_threshold_std}\n")
         log_file.write(f"  clip.temperature: {self.clip_temperature}\n")
+        log_file.write(f"  debug: {self.debug}\n")
+        log_file.write(f"  verbose_loss: {self.verbose_loss}\n")
         log_file.write("=" * 60 + "\n\n")
         log_file.flush()
     
@@ -160,6 +166,7 @@ class DCAClipTrainer(DCATrainer):
         pbar = tqdm(total=max_iter, desc=f"Target+CLIP [{task_name}]", ncols=120)
         
         best_acc = 0
+        loss_mix = torch.tensor(0.0).to(self.device)  # 初始化
         
         while iter_num < max_iter:
             try:
@@ -222,8 +229,21 @@ class DCAClipTrainer(DCATrainer):
             # 伪标签分类损失
             pred1 = mem_label1[tar_idx]
             pred2 = mem_label2[tar_idx]
+            
+            # 调试：检查伪标签是否有效
+            if self.debug and (iter_num <= 3 or iter_num % 100 == 0):
+                debug_msg = f"[DEBUG iter={iter_num}] pred1:[{pred1.min()},{pred1.max()}] pred2:[{pred2.min()},{pred2.max()}] outputs1:[{outputs1.min():.2f},{outputs1.max():.2f}] has_nan:{torch.isnan(outputs1).any()}"
+                print(debug_msg)
+                log_file.write(debug_msg + "\n")
+            
             classifier_loss1 = nn.CrossEntropyLoss()(outputs1, pred1)
             classifier_loss2 = nn.CrossEntropyLoss()(outputs2, pred2)
+            
+            # 调试：检查分类损失
+            if self.debug and (torch.isnan(classifier_loss1) or torch.isnan(classifier_loss2)):
+                debug_msg = f"[DEBUG NaN] classifier_loss1={classifier_loss1.item()}, classifier_loss2={classifier_loss2.item()}, pred1_unique={torch.unique(pred1).tolist()}, class_num={self.class_num}"
+                print(debug_msg)
+                log_file.write(debug_msg + "\n")
             
             # 不确定性加权（添加数值稳定性处理）
             kl_distance = nn.KLDivLoss(reduction='none')
@@ -233,6 +253,13 @@ class DCAClipTrainer(DCATrainer):
             softmax_out2_stable = torch.clamp(softmax_out2, min=1e-8)
             variance1 = torch.sum(kl_distance(log_sm(outputs1), softmax_out2_stable), dim=1)
             variance2 = torch.sum(kl_distance(log_sm(outputs2), softmax_out1_stable), dim=1)
+            
+            # 调试：检查 variance
+            if self.debug and (torch.isnan(variance1).any() or torch.isnan(variance2).any()):
+                debug_msg = f"[DEBUG NaN] variance1_nan={torch.isnan(variance1).sum()}, variance2_nan={torch.isnan(variance2).sum()}"
+                print(debug_msg)
+                log_file.write(debug_msg + "\n")
+            
             exp_variance1 = torch.mean(torch.exp(-variance1))
             exp_variance2 = torch.mean(torch.exp(-variance2))
             
@@ -250,8 +277,8 @@ class DCAClipTrainer(DCATrainer):
                     clip_logits = image_features @ self.text_features.T
                     clip_probs = F.softmax(clip_logits * self.clip_temperature, dim=1)
                 
-                loss_clip = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='batchmean') + \
-                            F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='batchmean')
+                loss_clip = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.float().detach(), reduction='batchmean') + \
+                            F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.float().detach(), reduction='batchmean')
             else:
                 loss_clip = torch.tensor(0.0).to(self.device)
             
@@ -302,8 +329,17 @@ class DCAClipTrainer(DCATrainer):
             optimizer_g.step()
             optimizer_d.step()
             
-            # 更新进度条
-            pbar.set_postfix({'Lcls': f'{loss_cs.item():.3f}', 'Lclip': f'{loss_clip.item():.3f}'})
+            # 更新进度条（根据 verbose_loss 配置决定显示内容）
+            if self.verbose_loss:
+                pbar.set_postfix({
+                    'Lcls': f'{loss_cs.item():.3f}',
+                    'Lclip': f'{loss_clip.item():.3f}',
+                    'Lmme': f'{loss_mme.item():.3f}',
+                    'Lcb': f'{loss_cb.item():.3f}',
+                    'Lmix': f'{loss_mix.item():.3f}'
+                })
+            else:
+                pbar.set_postfix({'Lcls': f'{loss_cs.item():.3f}', 'Lclip': f'{loss_clip.item():.3f}'})
             
             # 定期评估
             if iter_num % interval_iter == 0 or iter_num == max_iter:
@@ -313,10 +349,16 @@ class DCAClipTrainer(DCATrainer):
                 _, acc_list1, accuracy1 = cal_acc(dset_loaders["test"], self.netG, self.netF, self.netC, device=self.device)
                 _, acc_list2, accuracy2 = cal_acc_easy(dset_loaders["test"], self.netG, self.netD, device=self.device)
                 
-                log_str = f"Iter:{iter_num}/{max_iter}; Acc_c={accuracy1:.2f}%, Acc_d={accuracy2:.2f}%; Lcls:{loss_cs.item():.4f}; Lclip:{loss_clip.item():.4f}"
+                # 详细日志
+                log_str = f"Iter:{iter_num}/{max_iter}; Acc_c={accuracy1:.2f}%, Acc_d={accuracy2:.2f}%"
+                if self.verbose_loss:
+                    log_str += f"; Lcls:{loss_cs.item():.4f}; Lclip:{loss_clip.item():.4f}; Lmme:{loss_mme.item():.4f}; Lcb:{loss_cb.item():.4f}; Lmix:{loss_mix.item():.4f}"
+                else:
+                    log_str += f"; Lcls:{loss_cs.item():.4f}; Lclip:{loss_clip.item():.4f}"
                 
                 log_file.write(log_str + "\n")
                 log_file.flush()
+                print(log_str)
                 
                 pbar.set_postfix({'Acc_c': f'{accuracy1:.2f}%', 'Acc_d': f'{accuracy2:.2f}%'})
                 best_acc = max(best_acc, accuracy1)

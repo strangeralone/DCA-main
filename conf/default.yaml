@@ -21,3 +21,7 @@ epsilon: 1.0e-5
 # ========== 输出配置 ==========
 output_dir: "./ckps"
 savemodel: true
+
+# ========== 调试配置 ==========
+debug: false              # 启用调试模式（输出详细信息）
+verbose_loss: true        # 输出所有损失项
