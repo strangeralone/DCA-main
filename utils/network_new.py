@@ -15,7 +15,7 @@ from torchvision import models
 from torch.autograd import Variable, Function
 from utils import *
 import math, pdb
-import torch.nn.utils.weight_norm as weightNorm
+from torch.nn.utils.parametrizations import weight_norm as weightNorm
 import warnings
 
 
