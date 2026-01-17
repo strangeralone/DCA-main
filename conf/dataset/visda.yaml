@@ -1,0 +1,15 @@
+# VisDA-2017 数据集配置
+# 12 类场景 (Synthetic -> Real)
+
+name: "visda"
+class_num: 12
+
+# 域列表
+domains:
+  - "train"       # 源域 (Synthetic)
+  - "validation"  # 目标域 (Real)
+
+# 数据路径
+data_dir: "./data/visda"
+suffix: ".txt"
+classname_file: "classname.txt"

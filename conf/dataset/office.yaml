@@ -13,4 +13,4 @@ domains:
 # 数据路径
 data_dir: "./data/office"
 suffix: "_31.txt"
-classname_file: null  # 暂无类名文件
+classname_file: "classname.txt"
