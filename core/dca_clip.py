@@ -206,8 +206,10 @@ class DCAClipTrainer(DCATrainer):
             softmax_out1 = nn.Softmax(dim=1)(outputs1)
             softmax_out2 = nn.Softmax(dim=1)(outputs2)
             
+            # 对称KL散度
+            # 衡量两个分类器预测的差异，然后最小化这个差异
             loss_skl = torch.mean(torch.sum(SKL(softmax_out1, softmax_out2), dim=1))
-            total_loss1 += loss_skl * 0.1
+            total_loss1 += loss_skl * 0.1 # 不强迫完全一致
             
             loss_ent = entropy(self.netD, features_d, lamda)
             total_loss1 += loss_ent

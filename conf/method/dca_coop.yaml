@@ -1,0 +1,36 @@
+# DCA + CoOp 方法配置
+# Dual Classifier Adaptation with Context Optimization (Prompt Learning)
+
+name: "dca_coop"
+trainer: "core.dca_coop"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45
+cls_par: 0.15
+alpha: 0.5
+mix: 0.5
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40
+  smooth: 0.1
+  split: 0.9
+  trte: "val"
+  interval: 4
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15
+  interval: 10
+
+# ========== CoOp 特有配置 ==========
+coop:
+  model: "ViT-B/16"           # CLIP 模型
+  n_ctx: 16                   # 可学习的上下文向量数量
+  ctx_init: ""                # 初始化文本（空则随机初始化）
+  class_token_position: "end" # 类别token位置: end, middle, front
+  csc: false                  # 是否使用类别特定的上下文（Class-Specific Context）
+  prec: "fp16"                # 精度: fp16, fp32
+  loss_weight: 0.1            # CoOp 蒸馏损失权重
+  threshold_std: 1.0          # 高分歧样本阈值（均值 + std × 此值）
+  temperature: 100            # CLIP 相似度温度系数

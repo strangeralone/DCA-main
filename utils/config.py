@@ -102,8 +102,8 @@ def get_arg_parser() -> argparse.ArgumentParser:
     
     # 任务参数
     parser.add_argument('--method', type=str, default='dca',
-                        choices=['dca', 'dca_clip'],
-                        help='训练方法: dca (纯DCA) 或 dca_clip (DCA+CLIP)')
+                        choices=['dca', 'dca_clip', 'dca_coop'],
+                        help='训练方法: dca (纯DCA) 或 dca_clip (DCA+CLIP) 或 dca_coop (DCA+CoOp)')
     parser.add_argument('--dataset', type=str, default='officehome',
                         choices=['officehome', 'office'],
                         help='数据集名称')

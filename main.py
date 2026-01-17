@@ -65,6 +65,9 @@ def main():
     if method_name == 'dca_clip':
         from core.dca_clip import DCAClipTrainer
         trainer = DCAClipTrainer(config)
+    elif method_name == 'dca_coop':
+        from core.dca_coop import DCACoOpTrainer
+        trainer = DCACoOpTrainer(config)
     else:
         from core.dca import DCATrainer
         trainer = DCATrainer(config)
