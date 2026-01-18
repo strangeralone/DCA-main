@@ -1,0 +1,42 @@
+# DCA + CoOp Multi-Prompt 方法配置
+# 多组可学习提示向量，每组用不同模板初始化
+
+name: "dca_coop_multi"
+trainer: "core.dca_coop_multi"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45
+cls_par: 0.15
+alpha: 0.5
+mix: 0.5
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40
+  smooth: 0.1
+  split: 0.9
+  trte: "val"
+  interval: 4
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15
+  interval: 10
+  early_stop: true
+  early_stop_patience: 3
+
+# ========== CoOp Multi-Prompt 特有配置 ==========
+coop_multi:
+  model: "ViT-B/32"           # CLIP 模型
+  class_token_position: "end" # 类别 token 位置
+  loss_weight: 1              # 蒸馏损失权重
+  entropy_ratio: 0.15         # 熵阈值 = ln(K) * ratio
+  top_k_ratio: 0.35           # 分歧 top k% 为难样本
+  temperature: 100            # CLIP softmax 温度系数
+  
+  # 多组初始化模板（每组用不同模板初始化，token 数量必须相同）
+  ctx_inits:
+    - "a photo of a"
+    - "an image of a"
+    - "a picture of a"
+    - "a good photo of"

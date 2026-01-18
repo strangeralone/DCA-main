@@ -71,6 +71,9 @@ def main():
     elif method_name == 'multi_prompt':
         from core.multi_prompt import MultiPromptTrainer
         trainer = MultiPromptTrainer(config)
+    elif method_name == 'dca_coop_multi':
+        from core.dca_coop_multi import DCACoOpMultiTrainer
+        trainer = DCACoOpMultiTrainer(config)
     else:
         from core.dca import DCATrainer
         trainer = DCATrainer(config)
