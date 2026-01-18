@@ -131,7 +131,7 @@ def obtain_label(loader, netG, netF, netC, device="cuda"):
         aff = np.eye(K)[predict]
 
     acc = np.sum(predict == all_label.float().numpy()) / len(all_fea)
-    log_str = 'Accuracy = {:.2f}% -> {:.2f}%'.format(accuracy * 100, acc * 100)
+    log_str = '【obtain_label】Accuracy = {:.2f}% -> {:.2f}%'.format(accuracy * 100, acc * 100)
     print(log_str + '\n')
 
     return predict.astype('int')

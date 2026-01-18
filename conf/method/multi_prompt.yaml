@@ -1,0 +1,45 @@
+# DCA + Multi-Prompt 方法配置
+# Dual Classifier Adaptation with Multi-Template Enhancement
+
+name: "multi_prompt"
+trainer: "core.multi_prompt"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45
+cls_par: 0.15
+alpha: 0.5
+mix: 0.5
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40
+  smooth: 0.1
+  split: 0.9
+  trte: "val"
+  interval: 4
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15
+  interval: 10
+  early_stop: true
+  early_stop_patience: 3
+
+# ========== Multi-Prompt 特有配置 ==========
+multi_prompt:
+  model: "ViT-B/32"           # CLIP 模型
+  loss_weight: 1              # 蒸馏损失权重
+  entropy_ratio: 0.15         # 熵阈值 = ln(K) * ratio
+  top_k_ratio: 0.35           # 分歧 top k% 为难样本
+  temperature: 100            # CLIP softmax 温度系数
+  
+  # 多模板列表 - 可自定义
+  templates:
+    - "a photo of a {}"
+    - "a {} in the scene"
+    - "an image of a {}"
+    - "a professional photo of a {}"
+    - "a picture of a {}"
+    - "a {} image"
+    - "the {} in the photo"
+    - "a good photo of a {}"
