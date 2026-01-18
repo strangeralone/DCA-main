@@ -117,6 +117,10 @@ class DCAClipTrainer(DCATrainer):
         max_epoch = target_config.get('max_epoch', 15)
         interval = target_config.get('interval', 10)
         
+        # 早停配置
+        early_stop_patience = target_config.get('early_stop_patience', 3)
+        early_stop_enabled = target_config.get('early_stop', True)
+        
         lamda = self.method_config.get('lamda', 0.45)
         cls_par = self.method_config.get('cls_par', 0.15)
         alpha = self.method_config.get('alpha', 0.5)
@@ -165,8 +169,11 @@ class DCAClipTrainer(DCATrainer):
         # 使用 tqdm 进度条
         pbar = tqdm(total=max_iter, desc=f"Target+CLIP [{task_name}]", ncols=120)
         
+        # 早停相关变量
         best_acc = 0
-        loss_mix = torch.tensor(0.0).to(self.device)  # 初始化
+        no_improve_count = 0
+        best_iter = 0
+        loss_mix = torch.tensor(0.0).to(self.device)
         
         while iter_num < max_iter:
             try:
@@ -364,17 +371,34 @@ class DCAClipTrainer(DCATrainer):
                 print(log_str)
                 
                 pbar.set_postfix({'Acc_c': f'{accuracy1:.2f}%', 'Acc_d': f'{accuracy2:.2f}%'})
-                best_acc = max(best_acc, accuracy1)
+                
+                # 检查是否提升并保存最佳模型
+                if accuracy1 > best_acc:
+                    best_acc = accuracy1
+                    best_iter = iter_num
+                    no_improve_count = 0
+                    if self.config.get('savemodel', True):
+                        torch.save(self.netG.state_dict(), osp.join(output_dir, "target_G.pt"))
+                        torch.save(self.netF.state_dict(), osp.join(output_dir, "target_F.pt"))
+                        torch.save(self.netC.state_dict(), osp.join(output_dir, "target_C.pt"))
+                        torch.save(self.netD.state_dict(), osp.join(output_dir, "target_D.pt"))
+                        log_file.write(f"  -> 最佳模型已保存 (Acc={accuracy1:.2f}%)\n")
+                        log_file.flush()
+                else:
+                    no_improve_count += 1
+                    log_file.write(f"  -> 未提升 ({no_improve_count}/{early_stop_patience})\n")
+                    log_file.flush()
+                
+                # 早停检查
+                if early_stop_enabled and no_improve_count >= early_stop_patience:
+                    log_file.write(f"\n早停触发: 连续 {early_stop_patience} 次评估未提升\n")
+                    log_file.write(f"最佳准确率: {best_acc:.2f}% @ iter {best_iter}\n")
+                    log_file.flush()
+                    print(f"\n早停触发! 最佳准确率: {best_acc:.2f}% @ iter {best_iter}")
+                    break
                 
                 self.netG.train()
                 self.netF.train()
-            
-            # 保存模型
-            if self.config.get('savemodel', True):
-                torch.save(self.netG.state_dict(), osp.join(output_dir, "target_G.pt"))
-                torch.save(self.netF.state_dict(), osp.join(output_dir, "target_F.pt"))
-                torch.save(self.netC.state_dict(), osp.join(output_dir, "target_C.pt"))
-                torch.save(self.netD.state_dict(), osp.join(output_dir, "target_D.pt"))
         
         pbar.close()
         
