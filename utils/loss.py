@@ -222,3 +222,54 @@ def mixup_data(images, labels, alpha):
     mixed_labels = lam * labels + (1 - lam) * shuffled_labels
 
     return mixed_images, mixed_labels
+
+
+def iid_loss(x_out, x_tf_out, lamb=1.0, eps=1e-8):
+    """
+    IID Loss (Invariant Information Clustering Loss)
+    论文: DIFO - Source-Free Domain Adaptation with Frozen Multimodal Foundation Model (CVPR 2024)
+    
+    通过最大化两个分布之间的互信息来训练 Prompt Learner。
+    公式: L_IID = -I(X; Y) = -sum(P(x,y) * [log P(x,y) - log P(x) - log P(y)])
+    
+    Args:
+        x_out: CLIP 模型的 softmax 输出 (batch_size, num_classes)
+        x_tf_out: 伪标签的 softmax 分布 (batch_size, num_classes)
+        lamb: 边际概率的权重系数，默认1.0
+        eps: 数值稳定性的小常数
+    
+    Returns:
+        IID 损失值（标量）
+    """
+    # 确保输入是 2D
+    if x_out.dim() == 1:
+        x_out = x_out.unsqueeze(0)
+        x_tf_out = x_tf_out.unsqueeze(0)
+    
+    _, k = x_out.size()
+    
+    # 计算联合概率矩阵 P(CLIP_pred, pseudo_label)
+    # p_i_j[i,j] = sum_n(x_out[n,i] * x_tf_out[n,j]) / N
+    p_i_j = x_out.unsqueeze(2) * x_tf_out.unsqueeze(1)  # (batch, k, k)
+    p_i_j = p_i_j.sum(dim=0)  # (k, k)
+    
+    # 对称化：P = (P + P^T) / 2
+    p_i_j = (p_i_j + p_i_j.t()) / 2.
+    
+    # 归一化为概率分布
+    p_i_j = p_i_j / p_i_j.sum()
+    
+    # 计算边际概率
+    p_i = p_i_j.sum(dim=1).view(k, 1).expand(k, k)  # P(CLIP_pred)
+    p_j = p_i_j.sum(dim=0).view(1, k).expand(k, k)  # P(pseudo_label)
+    
+    # 数值稳定性处理
+    p_i_j = torch.clamp(p_i_j, min=eps)
+    
+    # 互信息损失: -I(X;Y) = -sum(p_ij * [log p_ij - log p_i - log p_j])
+    # 这里使用负号是因为我们要最大化互信息，但优化器是最小化
+    loss = - p_i_j * (torch.log(p_i_j) 
+                      - lamb * torch.log(p_j + eps) 
+                      - lamb * torch.log(p_i + eps))
+    
+    return loss.sum()

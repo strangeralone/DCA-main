@@ -17,7 +17,7 @@ from tqdm import tqdm
 import clip
 from core.dca import DCATrainer, op_copy, lr_scheduler
 from core.dca_coop import TextEncoder
-from utils.loss import SKL, entropy, adentropy, class_balance
+from utils.loss import SKL, entropy, adentropy, class_balance, iid_loss
 from utils.helpers import cal_acc, cal_acc_easy, obtain_label, obtain_label_easy
 
 
@@ -128,6 +128,7 @@ class DCACoOpMultiTrainer(DCATrainer):
         self.coop_temperature = coop_config.get('temperature', 100)
         self.coop_entropy_ratio = coop_config.get('entropy_ratio', 0.15)
         self.coop_top_k_ratio = coop_config.get('top_k_ratio', 0.2)
+        self.iid_weight = coop_config.get('iid_weight', 0.1)  # IID Loss 权重
         
         # 多组模板初始化配置
         self.ctx_inits = coop_config.get('ctx_inits', [
@@ -206,6 +207,7 @@ class DCACoOpMultiTrainer(DCATrainer):
         log_file.write(f"  model: {self.clip_model_name}\n")
         log_file.write(f"  ctx_inits: {self.ctx_inits}\n")
         log_file.write(f"  loss_weight: {self.coop_loss_weight}\n")
+        log_file.write(f"  iid_weight: {self.iid_weight}\n")
         log_file.write(f"  entropy_ratio: {self.coop_entropy_ratio}\n")
         log_file.write(f"  top_k_ratio: {self.coop_top_k_ratio}\n")
         log_file.write(f"  temperature: {self.coop_temperature}\n")
@@ -400,16 +402,26 @@ class DCACoOpMultiTrainer(DCATrainer):
                     image_features = self.clip_model.encode_image(clip_input)
                     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                 
-                # 获取多模板融合的文本特征（有梯度）
+                # 获取多模板融合的文本特征（有梯度，用于 IID Loss）
                 text_features = self._get_text_features()
                 
                 clip_logits = image_features @ text_features.T
                 clip_probs = F.softmax(clip_logits.float() * self.coop_temperature, dim=1)
                 
-                loss_coop = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='batchmean') + \
-                            F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='batchmean')
+                # DCA 软标签作为 prompt 训练目标
+                dca_soft_labels = ((softmax_out1 + softmax_out2) / 2)[topk_indices].detach()
+                
+                # 1. KL 蒸馏损失：训练 DCA 网络向 CLIP 对齐（detach CLIP 输出）
+                loss_kl = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='batchmean') + \
+                          F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='batchmean')
+                
+                # 2. IID 损失：训练 Prompt 最大化 CLIP 与 DCA 的互信息（梯度流向 prompt）
+                loss_iid = iid_loss(clip_probs, dca_soft_labels)
+                
+                loss_coop = loss_kl + self.iid_weight * loss_iid
             else:
                 loss_coop = torch.tensor(0.0).to(self.device)
+                loss_iid = torch.tensor(0.0).to(self.device)
             
             total_loss2 += self.coop_loss_weight * loss_coop
             
@@ -466,7 +478,7 @@ class DCACoOpMultiTrainer(DCATrainer):
                 
                 log_str = f"Iter:{iter_num}/{max_iter}; Acc_c={accuracy1:.2f}%, Acc_d={accuracy2:.2f}%"
                 if self.verbose_loss:
-                    log_str += f"; Lcls:{loss_cs.item():.4f}; Lcoop:{loss_coop.item():.4f}; Lmme:{loss_mme.item():.4f}"
+                    log_str += f"; Lcls:{loss_cs.item():.4f}; Lcoop:{loss_coop.item():.4f}; Liid:{loss_iid.item():.4f}; Lmme:{loss_mme.item():.4f}"
                 
                 log_file.write(log_str + "\n")
                 log_file.flush()

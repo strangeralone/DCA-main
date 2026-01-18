@@ -34,3 +34,4 @@ coop:
   entropy_ratio: 0.15         # 熵阈值 = ln(K) * ratio，两个分类器都模糊时使用 VLM
   top_k_ratio: 0.35           # 分歧 top k% 为难样本
   temperature: 100            # CLIP 相似度温度系数
+  iid_weight: 0.1             # IID Loss 权重（用于训练 prompt）

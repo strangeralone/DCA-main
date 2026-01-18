@@ -33,6 +33,7 @@ coop_multi:
   entropy_ratio: 0.15         # 熵阈值 = ln(K) * ratio
   top_k_ratio: 0.35           # 分歧 top k% 为难样本
   temperature: 100            # CLIP softmax 温度系数
+  iid_weight: 0.1             # IID Loss 权重（用于训练 prompt）
   
   # 多组初始化模板（每组用不同模板初始化，token 数量必须相同）
   ctx_inits:
