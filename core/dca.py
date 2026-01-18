@@ -602,9 +602,6 @@ class DCATrainer:
             optimizer_g.step()
             optimizer_d.step()
             
-            # 更新进度条
-            pbar.set_postfix({'Lcls': f'{loss_cs.item():.4f}', 'Lent': f'{loss_mme.item():.4f}'})
-            
             # 定期评估
             if iter_num % interval_iter == 0 or iter_num == max_iter:
                 self.netG.eval()
@@ -617,8 +614,9 @@ class DCATrainer:
                 
                 log_file.write(log_str + "\n")
                 log_file.flush()
+                print(log_str)
                 
-                # 更新进度条和最佳准确率
+                # 更新进度条
                 pbar.set_postfix({'Acc_c': f'{accuracy1:.2f}%', 'Acc_d': f'{accuracy2:.2f}%'})
                 best_acc = max(best_acc, accuracy1)
                 

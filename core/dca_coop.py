@@ -358,7 +358,7 @@ class DCACoOpTrainer(DCATrainer):
         interval_iter = max_iter // interval
         
         # 使用 tqdm 进度条
-        pbar = tqdm(total=max_iter, desc=f"Target+CoOp [{task_name}]", ncols=120)
+        pbar = tqdm(total=max_iter, desc=f"Target+CoOp [{task_name}]")
         
         # 早停相关变量
         best_acc = 0
@@ -532,18 +532,6 @@ class DCACoOpTrainer(DCATrainer):
             optimizer_g.step()
             optimizer_d.step()
             optimizer_prompt.step()
-            
-            # 更新进度条
-            pbar.set_postfix({})
-            
-            # 详细 loss 输出
-            if self.verbose_loss:
-                loss_info = f"iter={iter_num} | Lcls:{loss_cs.item():.3f} | Lcoop:{loss_coop.item():.3f} | Lmme:{loss_mme.item():.3f} | Lcb:{loss_cb.item():.3f} | Lmix:{loss_mix.item():.3f} | Total:{total_loss2.item():.3f}"
-                tqdm.write(f"\r  └─ {loss_info}", end="")
-                
-                if iter_num % 20 == 0:
-                    log_file.write(loss_info + "\n")
-                    log_file.flush()
             
             # 定期评估
             if iter_num % interval_iter == 0 or iter_num == max_iter:

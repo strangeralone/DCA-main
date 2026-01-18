@@ -168,7 +168,7 @@ class DCAClipTrainer(DCATrainer):
         interval_iter = max_iter // interval
         
         # 使用 tqdm 进度条
-        pbar = tqdm(total=max_iter, desc=f"Target+CLIP [{task_name}]", ncols=120)
+        pbar = tqdm(total=max_iter, desc=f"Target+CLIP [{task_name}]")
         
         # 早停相关变量
         best_acc = 0
@@ -353,19 +353,6 @@ class DCAClipTrainer(DCATrainer):
             total_loss2.backward()
             optimizer_g.step()
             optimizer_d.step()
-            
-            # 更新进度条（不显示 loss，保持简洁）
-            pbar.set_postfix({})
-            
-            # 每次迭代输出详细 loss 到进度条下方
-            if self.verbose_loss:
-                loss_info = f"iter={iter_num} | Lcls:{loss_cs.item():.3f} | Lclip:{loss_clip.item():.3f} | Lmme:{loss_mme.item():.3f} | Lcb:{loss_cb.item():.3f} | Lmix:{loss_mix.item():.3f} | Total:{total_loss2.item():.3f}"
-                tqdm.write(f"\r  └─ {loss_info}", end="")
-                
-                # 每 20 次迭代写入 log 文件
-                if iter_num % 20 == 0:
-                    log_file.write(loss_info + "\n")
-                    log_file.flush()
             
             # 定期评估
             if iter_num % interval_iter == 0 or iter_num == max_iter:
