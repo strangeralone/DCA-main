@@ -192,10 +192,11 @@ class DCACoOpTrainer(DCATrainer):
         self.ctx_init = coop_config.get('ctx_init', '')
         self.class_token_position = coop_config.get('class_token_position', 'end')
         
-        # 损失权重（复用 CLIP 的配置结构）
+        # 损失权重
         self.coop_loss_weight = coop_config.get('loss_weight', 0.1)
-        self.coop_threshold_std = coop_config.get('threshold_std', 1.0)
         self.coop_temperature = coop_config.get('temperature', 100)
+        self.coop_entropy_ratio = coop_config.get('entropy_ratio', 0.15)  # 熵阈值 = max_entropy * ratio
+        self.coop_top_k_ratio = coop_config.get('top_k_ratio', 0.2)  # 分歧 top k% 为难样本
         
         # 模型组件
         self.clip_model = None
@@ -442,10 +443,25 @@ class DCACoOpTrainer(DCATrainer):
             exp_variance1 = torch.mean(torch.exp(-variance1))
             exp_variance2 = torch.mean(torch.exp(-variance2))
             
-            # CoOp 蒸馏损失（使用可学习的提示生成文本特征）
-            threshold = variance1.mean() + variance1.std() * self.coop_threshold_std
-            high_discrepancy_mask = variance1 > threshold
-            topk_indices = torch.where(high_discrepancy_mask)[0]
+            # CoOp 蒸馏损失 - 难样本选择
+            # 计算两个分类器的熵（不确定性）
+            entropy1 = -torch.sum(softmax_out1 * torch.log(softmax_out1 + 1e-8), dim=1)
+            entropy2 = -torch.sum(softmax_out2 * torch.log(softmax_out2 + 1e-8), dim=1)
+            avg_entropy = (entropy1 + entropy2) / 2
+            
+            # 基于最大熵的阈值：max_entropy = ln(class_num)
+            max_entropy = np.log(self.class_num)
+            entropy_threshold = max_entropy * self.coop_entropy_ratio
+            
+            # 基于分歧的阈值（使用百分位数）
+            discrepancy = torch.sum(SKL(softmax_out1, softmax_out2), dim=1)
+            discrepancy_threshold = discrepancy.quantile(1 - self.coop_top_k_ratio)
+            
+            # 难样本 = 高熵 OR 高分歧
+            high_entropy_mask = avg_entropy > entropy_threshold
+            high_discrepancy_mask = discrepancy > discrepancy_threshold
+            difficult_mask = high_entropy_mask | high_discrepancy_mask
+            topk_indices = torch.where(difficult_mask)[0]
             
             if len(topk_indices) > 0:
                 clip_input = F.interpolate(inputs_test[topk_indices], size=(224, 224), mode='bicubic')

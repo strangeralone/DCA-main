@@ -26,6 +26,7 @@ target:
 # ========== CLIP 特有配置 ==========
 clip:
   model: "ViT-B/16"        # CLIP 模型: ViT-B/16, ViT-B/32, RN50
-  loss_weight: 1         # CLIP 蒸馏损失权重
-  threshold_std: 1.0       # 高分歧样本筛选的标准差倍数
+  loss_weight: 1           # CLIP 蒸馏损失权重
+  entropy_ratio: 0.15      # 熵阈值 = ln(K) * ratio，两个分类器都模糊时使用 VLM
+  top_k_ratio: 0.2         # 分歧 top k% 为难样本
   temperature: 100         # CLIP softmax 温度系数
