@@ -63,7 +63,7 @@ class MultiPromptTrainer(DCATrainer):
     def _load_clip_model(self):
         """加载并冻结 CLIP 模型"""
         print(f"加载 CLIP 模型: {self.clip_model_name}...")
-        self.clip_model, _ = clip.load(self.clip_model_name, device=self.device)
+        self.clip_model, _ = clip.load(self.clip_model_name, device=self.device, download_root='./vlm')
         self.clip_model.eval()
         for param in self.clip_model.parameters():
             param.requires_grad = False
