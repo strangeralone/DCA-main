@@ -483,9 +483,15 @@ class DCACoOpTrainer(DCATrainer):
                 # DCA 软标签作为 prompt 训练目标
                 dca_soft_labels = ((softmax_out1 + softmax_out2) / 2)[topk_indices].detach()
                 
-                # 1. KL 蒸馏损失：训练 DCA 网络向 CLIP 对齐（detach CLIP 输出）
-                loss_kl = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='batchmean') + \
-                          F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='batchmean')
+                # 1. KL 蒸馏损失：基于 CLIP 置信度加权（置信度低时减少蒸馏强度）
+                clip_confidence = clip_probs.max(dim=1)[0]  # [num_difficult_samples]
+                
+                # 按样本计算 KL（reduction='none' 保留每个样本的损失）
+                kl_per_sample1 = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='none').sum(dim=1)
+                kl_per_sample2 = F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='none').sum(dim=1)
+                
+                # 置信度加权求平均
+                loss_kl = (clip_confidence * (kl_per_sample1 + kl_per_sample2)).mean()
                 
                 # 2. IID 损失：训练 Prompt 最大化 CLIP 与 DCA 的互信息（梯度流向 prompt）
                 loss_iid = iid_loss(clip_probs, dca_soft_labels)
