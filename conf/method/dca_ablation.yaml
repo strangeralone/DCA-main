@@ -1,0 +1,56 @@
+# DCA VLM 消融实验配置
+# Dual Classifier Adaptation with VLM Ablation Study
+# 支持多种 VLM 后端：OpenAI CLIP, OpenCLIP (EVA-CLIP, DFN, MetaCLIP, SigLIP2)
+
+name: "dca_ablation"
+trainer: "core.dca_ablation"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45
+cls_par: 0.15
+alpha: 0.5
+mix: 0.5
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40
+  smooth: 0.1
+  split: 0.9
+  trte: "val"
+  interval: 4
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15
+  interval: 10
+
+# ========== VLM 消融实验配置 ==========
+coop:
+  # ====== VLM 后端配置 ======
+  # 方式1: 使用预设 (推荐，自动设置 backend/model/pretrained)
+  # preset: "metaclip-vit-b-16"
+  
+  # 可用预设列表:
+  # - OpenAI CLIP: clip-vit-b-32, clip-vit-b-16, clip-vit-l-14, clip-rn50
+  # - EVA-CLIP: eva-clip-vit-b-16, eva-clip-vit-l-14
+  # - DFN: dfn-vit-b-16, dfn-vit-l-14, dfn-vit-h-14
+  # - MetaCLIP: metaclip-vit-b-16, metaclip-vit-l-14, metaclip-vit-h-14
+  # - SigLIP2: siglip2-vit-b-16, siglip2-vit-l-16, siglip2-so400m
+  # - LAION: laion-vit-b-32, laion-vit-l-14
+  
+  # 方式2: 手动配置
+  backend: "clip"              # VLM 后端: "clip" (OpenAI) 或 "openclip"
+  model: "ViT-B/32"            # 模型架构
+  pretrained: null             # OpenCLIP 预训练权重 (仅 openclip 后端需要)
+  
+  # ====== Prompt Learning 配置 ======
+  n_ctx: 4                     # 可学习的上下文向量数量
+  ctx_init: "a_photo_of_a"     # 初始化文本（空则随机初始化）
+  class_token_position: "end"  # 类别token位置: end, middle, front
+  
+  # ====== 损失权重配置 ======
+  loss_weight: 1               # VLM 蒸馏损失权重
+  entropy_ratio: 0.15          # 熵阈值 = ln(K) * ratio
+  top_k_ratio: 0.35            # 分歧 top k% 为难样本
+  temperature: 100             # 相似度温度系数
+  iid_weight: 0.1              # IID Loss 权重

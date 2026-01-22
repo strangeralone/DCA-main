@@ -68,6 +68,9 @@ def main():
     elif method_name == 'dca_coop':
         from core.dca_coop import DCACoOpTrainer
         trainer = DCACoOpTrainer(config)
+    elif method_name == 'dca_ablation':
+        from core.dca_ablation import DCAAblationTrainer
+        trainer = DCAAblationTrainer(config)
     elif method_name == 'multi_prompt':
         from core.multi_prompt import MultiPromptTrainer
         trainer = MultiPromptTrainer(config)
