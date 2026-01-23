@@ -29,9 +29,12 @@ coop:
   n_ctx: 4                   # 可学习的上下文向量数量
   ctx_init: "a_photo_of_a"                # 初始化文本（空则随机初始化）
   class_token_position: "end" # 类别token位置: end, middle, front
-  csc: false                  # 是否使用类别特定的上下文（Class-Specific Context）
   loss_weight: 1              # CoOp 蒸馏损失权重
   entropy_ratio: 0.15         # 熵阈值 = ln(K) * ratio，两个分类器都模糊时使用 VLM
   top_k_ratio: 0.35           # 分歧 top k% 为难样本
   temperature: 100            # CLIP 相似度温度系数
   iid_weight: 0.1             # IID Loss 权重（用于训练 prompt）
+  # 两阶段 Prompt Tuning 配置
+  prompt_tuning_steps: 10     # 每次独立 Prompt Tuning 的迭代步数
+  high_conf_threshold: 0.3    # 高置信度阈值（熵 < ln(K) * threshold）
+

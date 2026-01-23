@@ -273,6 +273,160 @@ class DCACoOpTrainer(DCATrainer):
         log_file.write("=" * 60 + "\n\n")
         log_file.flush()
     
+    def _collect_high_confidence_samples(self, loader):
+        """收集高置信度样本（用于两阶段 Prompt Tuning）
+        
+        参考 DIFO: 只使用高置信度样本训练 Prompt，避免噪声干扰。
+        
+        Returns:
+            high_conf_indices: 高置信度样本的索引列表
+            high_conf_probs: 对应的 DCA 软标签
+            high_conf_images: 对应的图像路径或数据
+        """
+        self.netG.eval()
+        self.netF.eval()
+        self.netC.eval()
+        self.netD.eval()
+        
+        all_probs = []
+        all_indices = []
+        
+        with torch.no_grad():
+            for inputs, _, idx in loader:
+                inputs = inputs.to(self.device)
+                
+                # 获取双分类器预测
+                features_d = self.netG(inputs)
+                features = self.netF(features_d)
+                outputs1 = self.netC(features)
+                outputs2 = self.netD(features_d)
+                
+                softmax_out1 = F.softmax(outputs1, dim=1)
+                softmax_out2 = F.softmax(outputs2, dim=1)
+                
+                # 平均预测作为软标签
+                avg_probs = (softmax_out1 + softmax_out2) / 2
+                
+                all_probs.append(avg_probs.cpu())
+                all_indices.append(idx)
+        
+        all_probs = torch.cat(all_probs, dim=0)
+        all_indices = torch.cat(all_indices, dim=0)
+        
+        # 计算熵，选择低熵（高置信度）样本
+        entropy = -torch.sum(all_probs * torch.log(all_probs + 1e-8), dim=1)
+        max_entropy = np.log(self.class_num)
+        
+        # 使用配置的阈值，选择熵低于阈值的样本
+        coop_config = self.method_config.get('coop', {})
+        high_conf_threshold = coop_config.get('high_conf_threshold', 0.3)
+        threshold = max_entropy * high_conf_threshold
+        
+        high_conf_mask = entropy < threshold
+        high_conf_indices = all_indices[high_conf_mask]
+        high_conf_probs = all_probs[high_conf_mask]
+        
+        print(f"  高置信度样本: {len(high_conf_indices)}/{len(all_indices)} "
+              f"({100*len(high_conf_indices)/len(all_indices):.1f}%)")
+        
+        return high_conf_indices, high_conf_probs
+    
+    def _tune_prompt_only(self, dset_loaders, high_conf_indices, high_conf_probs, log_file=None):
+        """独立 Prompt Tuning 阶段（阶段 1）
+        
+        只训练 Prompt Learner，冻结所有其他网络。
+        使用 IID Loss 让 CLIP 输出对齐高置信度样本的 DCA 预测。
+        
+        Args:
+            dset_loaders: 数据加载器字典
+            high_conf_indices: 高置信度样本索引
+            high_conf_probs: 高置信度样本的 DCA 软标签
+            log_file: 日志文件
+        """
+        coop_config = self.method_config.get('coop', {})
+        prompt_tuning_steps = coop_config.get('prompt_tuning_steps', 10)
+        prompt_lr = self.config.get('lr', 0.01) * 0.1
+        
+        print(f"  开始独立 Prompt Tuning ({prompt_tuning_steps} steps)...")
+        
+        # 创建高置信度样本的索引到软标签的映射
+        idx_to_prob = {idx.item(): prob for idx, prob in zip(high_conf_indices, high_conf_probs)}
+        
+        # 设置 Prompt 优化器
+        optimizer_prompt = optim.SGD(
+            [{"params": self.prompt_learner.ctx, "lr": prompt_lr}],
+            momentum=0.9, weight_decay=5e-4
+        )
+        
+        # 冻结所有网络参数（只训练 Prompt）
+        self.netG.eval()
+        self.netF.eval()
+        self.netC.eval()
+        self.netD.eval()
+        
+        # 确保 Prompt Learner 可训练
+        self.prompt_learner.train()
+        for param in self.prompt_learner.parameters():
+            param.requires_grad = True
+        
+        step = 0
+        iter_loader = iter(dset_loaders["target"])
+        total_iid_loss = 0.0
+        
+        while step < prompt_tuning_steps:
+            try:
+                inputs, _, tar_idx = next(iter_loader)
+            except StopIteration:
+                iter_loader = iter(dset_loaders["target"])
+                inputs, _, tar_idx = next(iter_loader)
+            
+            # 筛选出高置信度样本
+            batch_mask = torch.tensor([i.item() in idx_to_prob for i in tar_idx])
+            if not batch_mask.any():
+                continue
+            
+            inputs_high_conf = inputs[batch_mask].to(self.device)
+            selected_idx = tar_idx[batch_mask]
+            
+            # 获取对应的 DCA 软标签
+            dca_soft_labels = torch.stack([idx_to_prob[i.item()] for i in selected_idx]).to(self.device)
+            
+            # 获取 CLIP 图像特征（冻结）
+            clip_input = F.interpolate(inputs_high_conf, size=(224, 224), mode='bicubic')
+            with torch.no_grad():
+                image_features = self.clip_model.encode_image(clip_input)
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            
+            # 获取可学习的文本特征（有梯度）
+            text_features = self._get_text_features()
+            
+            # 计算 CLIP 预测
+            clip_logits = image_features @ text_features.T
+            clip_probs = F.softmax(clip_logits.float() * self.coop_temperature, dim=1)
+            
+            # IID Loss: 让 CLIP 输出与 DCA 软标签对齐
+            loss_iid = iid_loss(clip_probs, dca_soft_labels)
+            
+            optimizer_prompt.zero_grad()
+            loss_iid.backward()
+            optimizer_prompt.step()
+            
+            total_iid_loss += loss_iid.item()
+            step += 1
+        
+        avg_iid_loss = total_iid_loss / max(step, 1)
+        print(f"  Prompt Tuning 完成, 平均 IID Loss: {avg_iid_loss:.4f}")
+        
+        if log_file:
+            log_file.write(f"  Prompt Tuning: {step} steps, avg IID Loss = {avg_iid_loss:.4f}\n")
+            log_file.flush()
+        
+        # 缓存训练后的文本特征
+        with torch.no_grad():
+            self.cached_text_features = self._get_text_features()
+        
+        return avg_iid_loss
+    
     def train_target(self, source_idx, target_idx, log_file=None):
         """目标域自适应（带 CoOp 提示学习）"""
         start_time = datetime.now()
@@ -331,10 +485,9 @@ class DCACoOpTrainer(DCATrainer):
         for k, v in self.netC.named_parameters():
             v.requires_grad = False
         
-        # 设置优化器（包含 DCA 网络 + 提示向量）
+        # 设置优化器（两阶段策略：只包含 DCA 网络，Prompt 在独立阶段训练）
         param_group_g = []
         param_group_d = []
-        param_group_prompt = []
         
         for k, v in self.netG.named_parameters():
             param_group_g += [{"params": v, "lr": lr * 0.1}]
@@ -343,16 +496,14 @@ class DCACoOpTrainer(DCATrainer):
         for k, v in self.netD.named_parameters():
             param_group_d += [{"params": v, "lr": lr * 2.0}]
         
-        # 提示向量优化器（使用较小的学习率）
-        param_group_prompt = [{"params": self.prompt_learner.ctx, "lr": lr * 0.5}]
-        
         optimizer_g = optim.SGD(param_group_g)
         optimizer_d = optim.SGD(param_group_d)
-        optimizer_prompt = optim.SGD(param_group_prompt)
         
         optimizer_g = op_copy(optimizer_g)
         optimizer_d = op_copy(optimizer_d)
-        optimizer_prompt = op_copy(optimizer_prompt)
+        
+        # 初始化缓存的文本特征（用于 KL 蒸馏）
+        self.cached_text_features = None
         
         iter_num = 0
         iter_target = iter(dset_loaders["target"])
@@ -378,14 +529,30 @@ class DCACoOpTrainer(DCATrainer):
             if inputs_test.size(0) == 1:
                 continue
             
-            # 定期更新伪标签
+            # 定期更新伪标签 + 两阶段 Prompt Tuning
             if iter_num % interval_iter == 0 and cls_par > 0:
                 self.netG.eval()
                 self.netF.eval()
+                
+                # 阶段 1: 更新伪标签
                 mem_label1 = obtain_label(dset_loaders["test"], self.netG, self.netF, self.netC, device=self.device)
                 mem_label2 = obtain_label_easy(dset_loaders["test"], self.netG, self.netD, device=self.device)
                 mem_label1 = torch.from_numpy(mem_label1).to(self.device)
                 mem_label2 = torch.from_numpy(mem_label2).to(self.device)
+                
+                # 阶段 2: 独立 Prompt Tuning（收集高置信度样本 + 训练 Prompt）
+                if self.coop_loss_weight > 0:
+                    print(f"\n[Iter {iter_num}] 开始两阶段 Prompt Tuning...")
+                    high_conf_indices, high_conf_probs = self._collect_high_confidence_samples(dset_loaders["target"])
+                    if len(high_conf_indices) > 0:
+                        self._tune_prompt_only(dset_loaders, high_conf_indices, high_conf_probs, log_file)
+                    else:
+                        print("  警告: 没有高置信度样本，跳过 Prompt Tuning")
+                        # 如果没有缓存，使用初始文本特征
+                        if self.cached_text_features is None:
+                            with torch.no_grad():
+                                self.cached_text_features = self._get_text_features()
+                
                 self.netG.train()
                 self.netF.train()
             
@@ -395,7 +562,6 @@ class DCACoOpTrainer(DCATrainer):
             
             lr_scheduler(optimizer_g, iter_num=iter_num, max_iter=max_iter)
             lr_scheduler(optimizer_d, iter_num=iter_num, max_iter=max_iter)
-            lr_scheduler(optimizer_prompt, iter_num=iter_num, max_iter=max_iter)
             
             # Step A: 训练 netD
             total_loss1 = 0
@@ -445,62 +611,46 @@ class DCACoOpTrainer(DCATrainer):
             exp_variance1 = torch.mean(torch.exp(-variance1))
             exp_variance2 = torch.mean(torch.exp(-variance2))
             
-            # CoOp 蒸馏损失 - 难样本选择
-            # 计算两个分类器的熵（不确定性）
-            entropy1 = -torch.sum(softmax_out1 * torch.log(softmax_out1 + 1e-8), dim=1)
-            entropy2 = -torch.sum(softmax_out2 * torch.log(softmax_out2 + 1e-8), dim=1)
-            avg_entropy = (entropy1 + entropy2) / 2
+            # 两阶段 CoOp 蒸馏：使用缓存的文本特征（Prompt 在独立阶段已训练）
+            loss_coop = torch.tensor(0.0).to(self.device)
             
-            # 基于最大熵的阈值：max_entropy = ln(class_num)
-            max_entropy = np.log(self.class_num)
-            entropy_threshold = max_entropy * self.coop_entropy_ratio
-            
-            # 基于分歧的阈值（使用百分位数）
-            discrepancy = torch.sum(SKL(softmax_out1, softmax_out2), dim=1)
-            discrepancy_threshold = discrepancy.quantile(1 - self.coop_top_k_ratio)
-            
-            # 难样本 = 高熵 OR 高分歧
-            high_entropy_mask = avg_entropy > entropy_threshold
-            high_discrepancy_mask = discrepancy > discrepancy_threshold
-            difficult_mask = high_entropy_mask | high_discrepancy_mask
-            topk_indices = torch.where(difficult_mask)[0]
-            
-            if len(topk_indices) > 0:
-                clip_input = F.interpolate(inputs_test[topk_indices], size=(224, 224), mode='bicubic')
+            if self.cached_text_features is not None and self.coop_loss_weight > 0:
+                # 选择难样本进行 KL 蒸馏
+                entropy1 = -torch.sum(softmax_out1 * torch.log(softmax_out1 + 1e-8), dim=1)
+                entropy2 = -torch.sum(softmax_out2 * torch.log(softmax_out2 + 1e-8), dim=1)
+                avg_entropy = (entropy1 + entropy2) / 2
                 
-                # 获取 CLIP 图像特征
-                with torch.no_grad():
-                    image_features = self.clip_model.encode_image(clip_input)
-                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                max_entropy = np.log(self.class_num)
+                entropy_threshold = max_entropy * self.coop_entropy_ratio
                 
-                # 获取可学习的文本特征（这里会有梯度，用于 IID Loss）
-                text_features = self._get_text_features()
+                discrepancy = torch.sum(SKL(softmax_out1, softmax_out2), dim=1)
+                discrepancy_threshold = discrepancy.quantile(1 - self.coop_top_k_ratio)
                 
-                # 计算 CLIP 相似度
-                clip_logits = image_features @ text_features.T
-                clip_probs = F.softmax(clip_logits.float() * self.coop_temperature, dim=1)
+                high_entropy_mask = avg_entropy > entropy_threshold
+                high_discrepancy_mask = discrepancy > discrepancy_threshold
+                difficult_mask = high_entropy_mask | high_discrepancy_mask
+                topk_indices = torch.where(difficult_mask)[0]
                 
-                # DCA 软标签作为 prompt 训练目标
-                dca_soft_labels = ((softmax_out1 + softmax_out2) / 2)[topk_indices].detach()
-                
-                # 1. KL 蒸馏损失：基于 CLIP 置信度加权（归一化权重，保持 loss 量级不变）
-                clip_confidence = clip_probs.max(dim=1)[0]  # [num_difficult_samples]
-                weight = clip_confidence / clip_confidence.mean()  # 归一化：高置信度放大，低置信度缩小
-                
-                # 按样本计算 KL（reduction='none' 保留每个样本的损失）
-                kl_per_sample1 = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs.detach(), reduction='none').sum(dim=1)
-                kl_per_sample2 = F.kl_div(log_sm(outputs2[topk_indices]), clip_probs.detach(), reduction='none').sum(dim=1)
-                
-                # 归一化权重加权求平均
-                loss_kl = (weight * (kl_per_sample1 + kl_per_sample2)).mean()
-                
-                # 2. IID 损失：训练 Prompt 最大化 CLIP 与 DCA 的互信息（梯度流向 prompt）
-                loss_iid = iid_loss(clip_probs, dca_soft_labels)
-                
-                loss_coop = loss_kl + self.iid_weight * loss_iid
-            else:
-                loss_coop = torch.tensor(0.0).to(self.device)
-                loss_iid = torch.tensor(0.0).to(self.device)
+                if len(topk_indices) > 0:
+                    clip_input = F.interpolate(inputs_test[topk_indices], size=(224, 224), mode='bicubic')
+                    
+                    # 获取 CLIP 图像特征（冻结）
+                    with torch.no_grad():
+                        image_features = self.clip_model.encode_image(clip_input)
+                        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                        
+                        # 使用缓存的文本特征（不计算梯度，Prompt 不更新）
+                        clip_logits = image_features @ self.cached_text_features.T
+                        clip_probs = F.softmax(clip_logits.float() * self.coop_temperature, dim=1)
+                    
+                    # KL 蒸馏损失（只训练 DCA 网络，梯度不流向 Prompt）
+                    clip_confidence = clip_probs.max(dim=1)[0]
+                    weight = clip_confidence / clip_confidence.mean()
+                    
+                    kl_per_sample1 = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs, reduction='none').sum(dim=1)
+                    kl_per_sample2 = F.kl_div(log_sm(outputs2[topk_indices]), clip_probs, reduction='none').sum(dim=1)
+                    
+                    loss_coop = (weight * (kl_per_sample1 + kl_per_sample2)).mean()
             
             total_loss2 += self.coop_loss_weight * loss_coop
             
@@ -543,14 +693,12 @@ class DCACoOpTrainer(DCATrainer):
                 loss_mix = loss_mix1 + loss_mix2
                 total_loss2 += loss_mix
             
-            # 更新所有参数
+            # 更新 DCA 网络参数（两阶段策略：Prompt 在独立阶段已更新，这里不更新）
             optimizer_g.zero_grad()
             optimizer_d.zero_grad()
-            optimizer_prompt.zero_grad()
             total_loss2.backward()
             optimizer_g.step()
             optimizer_d.step()
-            optimizer_prompt.step()
             
             # 定期评估
             if iter_num % interval_iter == 0 or iter_num == max_iter:
@@ -562,7 +710,7 @@ class DCACoOpTrainer(DCATrainer):
                 
                 log_str = f"Iter:{iter_num}/{max_iter}; Acc_c={accuracy1:.2f}%, Acc_d={accuracy2:.2f}%"
                 if self.verbose_loss:
-                    log_str += f"; Lcls:{loss_cs.item():.4f}; Lcoop:{loss_coop.item():.4f}; Liid:{loss_iid.item():.4f}; Lmme:{loss_mme.item():.4f}; Lcb:{loss_cb.item():.4f}; Lmix:{loss_mix.item():.4f}"
+                    log_str += f"; Lcls:{loss_cs.item():.4f}; Lcoop:{loss_coop.item():.4f}; Lmme:{loss_mme.item():.4f}; Lcb:{loss_cb.item():.4f}; Lmix:{loss_mix.item():.4f}"
                 
                 log_file.write(log_str + "\n")
                 log_file.flush()
