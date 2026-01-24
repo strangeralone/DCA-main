@@ -198,8 +198,7 @@ class DCACoOpTrainer(DCATrainer):
         self.coop_entropy_ratio = coop_config.get('entropy_ratio', 0.15)  # 熵阈值 = max_entropy * ratio
         self.coop_top_k_ratio = coop_config.get('top_k_ratio', 0.2)  # 分歧 top k% 为难样本
         self.coop_sigmoid_temp = coop_config.get('sigmoid_temperature', 5.0) # 平滑筛选温度系数
-        self.kg_weight = coop_config.get('kg_weight', 8.0)  # KgCoOp 约束权重
-        self.iid_weight = coop_config.get('iid_weight', 0.1)  # IID Loss 权重
+        self.use_consensus = coop_config.get('use_consensus', True) # 是否使用双重确认
         
         # 模型组件
         self.clip_model = None
@@ -242,27 +241,6 @@ class DCACoOpTrainer(DCATrainer):
         tokenized_prompts = self.prompt_learner.tokenized_prompts
         text_features = self.text_encoder(prompts, tokenized_prompts)
         text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-        return text_features
-
-    def _get_zeroshot_text_features(self):
-        """获取 Zero-Shot 文本特征（Fixed Anchors）
-        
-        使用标准提示 "a photo of a {class}" 生成固定的文本特征。
-        用于 KgCoOp 约束，防止学习到的 Prompt 偏离通用知识太远。
-        """
-        class_names = self._load_class_names()
-        # 将 class_names 格式化为 "a photo of a {}"
-        templates = [f"a photo of a {name.replace('_', ' ')}" for name in class_names]
-        
-        # Tokenize
-        text_inputs = torch.cat([clip.tokenize(t) for t in templates]).to(self.device)
-        
-        # 此时只能使用原始 CLIP 的 encode_text
-        # 注意：这里直接使用 self.clip_model.encode_text，它内部使用了原始的 transformer
-        with torch.no_grad():
-            text_features = self.clip_model.encode_text(text_inputs)
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            
         return text_features
     
     def _load_class_names(self):
@@ -349,7 +327,7 @@ class DCACoOpTrainer(DCATrainer):
         high_conf_indices = all_indices[high_conf_mask]
         high_conf_probs = all_probs[high_conf_mask]
         
-        print(f"  高置信度样本: {len(high_conf_indices)}/{len(all_indices)} "
+        print(f"  高置信度样本 (DCA): {len(high_conf_indices)}/{len(all_indices)} "
               f"({100*len(high_conf_indices)/len(all_indices):.1f}%)")
         
         return high_conf_indices, high_conf_probs
@@ -392,10 +370,6 @@ class DCACoOpTrainer(DCATrainer):
         for param in self.prompt_learner.parameters():
             param.requires_grad = True
         
-        # KgCoOp: 预先计算 Zero-Shot 锚点特征
-        if self.kg_weight > 0:
-            zeroshot_text_features = self._get_zeroshot_text_features().detach()
-        
         step = 0
         iter_loader = iter(dset_loaders["target"])
         total_iid_loss = 0.0
@@ -417,14 +391,40 @@ class DCACoOpTrainer(DCATrainer):
             
             # 获取对应的 DCA 软标签
             dca_soft_labels = torch.stack([idx_to_prob[i.item()] for i in selected_idx]).to(self.device)
-            
+            dca_preds = dca_soft_labels.argmax(dim=1)
+
             # 获取 CLIP 图像特征（冻结）
             clip_input = F.interpolate(inputs_high_conf, size=(224, 224), mode='bicubic')
             with torch.no_grad():
                 image_features = self.clip_model.encode_image(clip_input)
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             
+            # === Consensus Filtering ===
+            # 如果开启了 Use Consensus，我们需要 CLIP 也是这个 Prediction 才能用
+            if self.use_consensus:
+                # 获取当前 Prompt 下的 CLIP 预测
+                with torch.no_grad():
+                    # 此时需要临时的 text features
+                    curr_text_features = self._get_text_features()
+                    curr_logits = image_features @ curr_text_features.T
+                    clip_preds = curr_logits.argmax(dim=1)
+                
+                # 检查一致性
+                consensus_mask = (clip_preds == dca_preds)
+                
+                # 如果没有一致的样本，跳过
+                if not consensus_mask.any():
+                    continue
+                    
+                # 过滤数据
+                dca_soft_labels = dca_soft_labels[consensus_mask]
+                # image_features 也要过滤
+                image_features = image_features[consensus_mask]
+                # inputs_high_conf 不需要了，因为 features 已经算好了
+            
             # 获取可学习的文本特征（有梯度）
+            # 注意：如果上面 consensus 用过了 _get_text_features，那里是 no_grad 的
+            # 这里我们需要带梯度的 text_features
             text_features = self._get_text_features()
             
             # 计算 CLIP 预测
@@ -434,20 +434,8 @@ class DCACoOpTrainer(DCATrainer):
             # IID Loss: 让 CLIP 输出与 DCA 软标签对齐
             loss_iid = iid_loss(clip_probs, dca_soft_labels)
             
-            # KgCoOp Constraint Loss: Minimize distance to Zero-Shot features
-            # 官方实现通常最大化余弦相似度，等价于最小化 -cosine_sim
-            loss_kg = torch.tensor(0.0).to(self.device)
-            if self.kg_weight > 0:
-                # Cosine Similarity: sum(a*b) since already normalized
-                # text_features: [K, dim], zeroshot_text_features: [K, dim]
-                # diag of dot product
-                sim = torch.sum(text_features * zeroshot_text_features, dim=1)
-                loss_kg = self.kg_weight * (1.0 - sim.mean()) # Minimize (1 - sim)
-                
-            loss_total = loss_iid + loss_kg
-            
             optimizer_prompt.zero_grad()
-            loss_total.backward()
+            loss_iid.backward()
             optimizer_prompt.step()
             
             total_iid_loss += loss_iid.item()
