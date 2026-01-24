@@ -197,6 +197,7 @@ class DCACoOpTrainer(DCATrainer):
         self.coop_temperature = coop_config.get('temperature', 100)
         self.coop_entropy_ratio = coop_config.get('entropy_ratio', 0.15)  # 熵阈值 = max_entropy * ratio
         self.coop_top_k_ratio = coop_config.get('top_k_ratio', 0.2)  # 分歧 top k% 为难样本
+        self.coop_sigmoid_temp = coop_config.get('sigmoid_temperature', 5.0) # 平滑筛选温度系数
         self.iid_weight = coop_config.get('iid_weight', 0.1)  # IID Loss 权重
         
         # 模型组件
@@ -345,7 +346,7 @@ class DCACoOpTrainer(DCATrainer):
         """
         coop_config = self.method_config.get('coop', {})
         prompt_tuning_steps = coop_config.get('prompt_tuning_steps', 10)
-        prompt_lr = self.config.get('lr', 0.01) * 0.1
+        prompt_lr = self.config.get('lr', 0.01) * 1
         
         print(f"  开始独立 Prompt Tuning ({prompt_tuning_steps} steps)...")
         
@@ -626,31 +627,41 @@ class DCACoOpTrainer(DCATrainer):
                 discrepancy = torch.sum(SKL(softmax_out1, softmax_out2), dim=1)
                 discrepancy_threshold = discrepancy.quantile(1 - self.coop_top_k_ratio)
                 
-                high_entropy_mask = avg_entropy > entropy_threshold
-                high_discrepancy_mask = discrepancy > discrepancy_threshold
-                difficult_mask = high_entropy_mask | high_discrepancy_mask
-                topk_indices = torch.where(difficult_mask)[0]
+                # === 平滑筛选机制 (Soft Weighting) ===
+                # 计算相对难度分数 ( >1 代表超过阈值)
+                score_ent = avg_entropy / (entropy_threshold + 1e-8)
+                score_disc = discrepancy / (discrepancy_threshold + 1e-8)
                 
-                if len(topk_indices) > 0:
-                    clip_input = F.interpolate(inputs_test[topk_indices], size=(224, 224), mode='bicubic')
+                # 取两者最大值作为该样本的“难度系数”
+                difficulty_score = torch.max(score_ent, score_disc)
+                
+                # 使用 Sigmoid 生成平滑权重 (center at 1.0)
+                # scale 控制过渡陡峭程度，让边缘不再是一刀切
+                soft_mask = torch.sigmoid((difficulty_score - 1.0) * self.coop_sigmoid_temp).detach()
+                
+                # 对所有样本计算 CLIP 损失，但用 soft_mask 进行加权
+                # 注意：这里需要对整个 batch 计算 CLIP 特征
+                clip_input = F.interpolate(inputs_test, size=(224, 224), mode='bicubic')
+                
+                with torch.no_grad():
+                    image_features = self.clip_model.encode_image(clip_input)
+                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
                     
-                    # 获取 CLIP 图像特征（冻结）
-                    with torch.no_grad():
-                        image_features = self.clip_model.encode_image(clip_input)
-                        image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                        
-                        # 使用缓存的文本特征（不计算梯度，Prompt 不更新）
-                        clip_logits = image_features @ self.cached_text_features.T
-                        clip_probs = F.softmax(clip_logits.float() * self.coop_temperature, dim=1)
-                    
-                    # KL 蒸馏损失（只训练 DCA 网络，梯度不流向 Prompt）
-                    clip_confidence = clip_probs.max(dim=1)[0]
-                    weight = clip_confidence / clip_confidence.mean()
-                    
-                    kl_per_sample1 = F.kl_div(log_sm(outputs1[topk_indices]), clip_probs, reduction='none').sum(dim=1)
-                    kl_per_sample2 = F.kl_div(log_sm(outputs2[topk_indices]), clip_probs, reduction='none').sum(dim=1)
-                    
-                    loss_coop = (weight * (kl_per_sample1 + kl_per_sample2)).mean()
+                    # 使用缓存的文本特征（不计算梯度，Prompt 不更新）
+                    clip_logits = image_features @ self.cached_text_features.T
+                    clip_probs = F.softmax(clip_logits.float() * self.coop_temperature, dim=1)
+                
+                # KL 蒸馏损失（只训练 DCA 网络，梯度不流向 Prompt）
+                clip_confidence = clip_probs.max(dim=1)[0]
+                weight = clip_confidence / (clip_confidence.mean() + 1e-8)
+                
+                # 计算整个 batch 的 KL 散度
+                kl_per_sample1 = F.kl_div(log_sm(outputs1), clip_probs, reduction='none').sum(dim=1)
+                kl_per_sample2 = F.kl_div(log_sm(outputs2), clip_probs, reduction='none').sum(dim=1)
+                
+                # 最终 Loss = (Soft权重 * CLIP自信度 * KL散度).mean()
+                final_weight = soft_mask * weight
+                loss_coop = (final_weight * (kl_per_sample1 + kl_per_sample2)).mean()
             
             total_loss2 += self.coop_loss_weight * loss_coop
             

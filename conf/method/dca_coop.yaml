@@ -37,4 +37,5 @@ coop:
   # 两阶段 Prompt Tuning 配置
   prompt_tuning_steps: 10     # 每次独立 Prompt Tuning 的迭代步数
   high_conf_threshold: 0.3    # 高置信度阈值（熵 < ln(K) * threshold）
+  sigmoid_temperature: 5    # 平滑筛选温度 (5.0为推荐值，越大越接近 Hard Mask)
 
