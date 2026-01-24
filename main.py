@@ -8,10 +8,10 @@
     python main.py --method dca --dataset officehome --source 0 --mode source
     
     # 目标域适应（使用 CLIP）
-    python main.py --method dca_clip --dataset officehome --source 0 --target 1 --mode target
+    python main.py --method dca_coop --dataset officehome --source 0 --target 1 --mode target
     
     # 完整流程（源域 + 目标域）
-    python main.py --method dca --dataset officehome --source 0 --target 1 --mode all
+    python main.py --method dca_coop --dataset officehome --source 0 --target 1 --mode all
     
     # 覆盖配置参数
     python main.py --method dca --source 0 --mode source --max_epoch 5 --batch_size 32

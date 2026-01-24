@@ -10,7 +10,7 @@
 # 域索引: 0=Art, 1=Clipart, 2=Product, 3=RealWorld
 
 # 解析参数
-METHOD="${1:-dca}"
+METHOD="${1:-dca_coop}"
 DEVICE="${2:-cuda}"
 
 # 域名称（用于日志显示）

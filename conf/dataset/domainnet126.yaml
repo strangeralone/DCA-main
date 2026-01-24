@@ -1,0 +1,17 @@
+# Office-Home 数据集配置
+# 65 类场景
+
+name: "domainnet126"
+class_num: 126
+
+# 域列表
+domains:
+  - "clipart"
+  - "painting"
+  - "real"
+  - "sketch"
+
+# 数据路径
+data_dir: "./data/domainnet126"
+suffix: "_list.txt"
+classname_file: "classname.txt"
