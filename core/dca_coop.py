@@ -21,7 +21,7 @@ from tqdm import tqdm
 import clip
 from core.dca import DCATrainer, op_copy, lr_scheduler
 from utils.loss import SKL, entropy, adentropy, class_balance, iid_loss
-from utils.helpers import cal_acc, cal_acc_easy, obtain_label, obtain_label_easy
+from utils.helpers import cal_acc, cal_acc_easy, obtain_label, obtain_label_easy, cal_acc_tta, cal_acc_easy_tta
 
 
 class TextEncoder(nn.Module):
@@ -750,6 +750,39 @@ class DCACoOpTrainer(DCATrainer):
         
         # 写入结束时间
         self._write_end_time(log_file, start_time)
+        
+        # TTA 最终评估（加载最佳模型）
+        if self.config.get('use_tta', True):
+            print("\n进行 TTA 最终评估...")
+            log_file.write("\n" + "=" * 60 + "\n")
+            log_file.write("🎯 TTA 最终评估\n")
+            log_file.write("=" * 60 + "\n")
+            
+            # 加载最佳模型
+            if self.config.get('savemodel', True):
+                self.netG.load_state_dict(torch.load(osp.join(output_dir, "target_G.pt"), map_location=self.device))
+                self.netF.load_state_dict(torch.load(osp.join(output_dir, "target_F.pt"), map_location=self.device))
+                self.netC.load_state_dict(torch.load(osp.join(output_dir, "target_C.pt"), map_location=self.device))
+                self.netD.load_state_dict(torch.load(osp.join(output_dir, "target_D.pt"), map_location=self.device))
+            
+            self.netG.eval()
+            self.netF.eval()
+            
+            # 普通评估
+            _, _, acc_normal = cal_acc(dset_loaders["test"], self.netG, self.netF, self.netC, device=self.device)
+            
+            # TTA 评估
+            _, _, acc_tta = cal_acc_tta(dset_loaders["test"], self.netG, self.netF, self.netC, device=self.device)
+            
+            improvement = acc_tta - acc_normal
+            log_file.write(f"普通评估: {acc_normal:.2f}%\n")
+            log_file.write(f"TTA 评估: {acc_tta:.2f}%\n")
+            log_file.write(f"TTA 提升: {improvement:+.2f}%\n")
+            log_file.write("=" * 60 + "\n")
+            log_file.flush()
+            
+            print(f"TTA 评估完成: {acc_normal:.2f}% -> {acc_tta:.2f}% ({improvement:+.2f}%)")
+            best_acc = max(best_acc, acc_tta)
         
         print(f"目标域适应完成 (带 CoOp): {task_name}! 最佳准确率: {best_acc:.2f}%")
         return output_dir

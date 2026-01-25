@@ -274,3 +274,216 @@ def label_mix(pred1, pred2):
     labels_mix = np.array(new_labels)
 
     return labels_mix
+
+
+# ==================== TTA 测试时增强 ====================
+
+def _get_tta_transforms():
+    """获取 TTA 增强变换列表
+    
+    返回 10 种增强组合：5 个裁剪位置 × 2 种翻转状态
+    """
+    from torchvision import transforms
+    import torchvision
+    
+    normalize = torchvision.transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    
+    # 五点裁剪函数
+    def five_crop(img, size=224):
+        """对图像进行五点裁剪：四角 + 中心"""
+        w, h = img.size
+        crop_h, crop_w = size, size
+        
+        # 计算裁剪位置
+        tl = img.crop((0, 0, crop_w, crop_h))  # top-left
+        tr = img.crop((w - crop_w, 0, w, crop_h))  # top-right
+        bl = img.crop((0, h - crop_h, crop_w, h))  # bottom-left
+        br = img.crop((w - crop_w, h - crop_h, w, h))  # bottom-right
+        center = img.crop(((w - crop_w) // 2, (h - crop_h) // 2, 
+                          (w + crop_w) // 2, (h + crop_h) // 2))  # center
+        
+        return [tl, tr, bl, br, center]
+    
+    return five_crop, normalize
+
+
+def cal_acc_tta(loader, netG, netF, netC, device="cuda", num_augments=10):
+    """使用测试时增强（TTA）计算准确率
+    
+    对每个样本做多次增强，取预测平均值。
+    增强策略：5 个裁剪位置 × 2 种翻转状态 = 10 次预测
+    
+    Args:
+        loader: 数据加载器（注意：需要使用原始 PIL 图像，不能预处理）
+        netG: 特征提取器
+        netF: 瓶颈层
+        netC: 分类器
+        device: 计算设备
+        num_augments: 增强次数（默认 10）
+    
+    Returns:
+        aacc: 平均每类准确率
+        acc: 每类准确率字符串
+        accuracy: 总体准确率（百分比）
+    """
+    from torchvision import transforms
+    import torchvision
+    
+    five_crop, normalize = _get_tta_transforms()
+    to_tensor = transforms.ToTensor()
+    resize = transforms.Resize((256, 256))
+    hflip = transforms.RandomHorizontalFlip(p=1.0)
+    
+    netG.eval()
+    netF.eval()
+    netC.eval()
+    
+    all_outputs = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for data in loader:
+            # 获取原始图像路径和标签
+            # 注意：这里假设 loader 返回的是 (image_tensor, label)
+            # 我们需要对 tensor 做 TTA
+            inputs = data[0]  # [B, C, H, W]
+            labels = data[1]
+            
+            batch_size = inputs.size(0)
+            batch_outputs = []
+            
+            for i in range(batch_size):
+                img_tensor = inputs[i]  # [C, H, W]
+                sample_outputs = []
+                
+                # 方法1：直接对 tensor 做增强（更高效）
+                # 原图 + 水平翻转 = 2 种
+                for flip in [False, True]:
+                    if flip:
+                        aug_tensor = torch.flip(img_tensor, dims=[2])  # 水平翻转
+                    else:
+                        aug_tensor = img_tensor
+                    
+                    # 五点裁剪（在 tensor 上操作）
+                    _, h, w = aug_tensor.shape
+                    crop_size = 224
+                    
+                    # 计算五个裁剪位置
+                    crops = [
+                        (0, 0),  # top-left
+                        (w - crop_size, 0),  # top-right
+                        (0, h - crop_size),  # bottom-left
+                        (w - crop_size, h - crop_size),  # bottom-right
+                        ((w - crop_size) // 2, (h - crop_size) // 2),  # center
+                    ]
+                    
+                    for x, y in crops:
+                        cropped = aug_tensor[:, y:y+crop_size, x:x+crop_size]
+                        cropped = cropped.unsqueeze(0).to(device)  # [1, C, H, W]
+                        
+                        output = netC(netF(netG(cropped)))
+                        output = F.softmax(output, dim=1)
+                        sample_outputs.append(output)
+                
+                # 平均所有增强的预测
+                avg_output = torch.stack(sample_outputs, dim=0).mean(dim=0)  # [1, num_classes]
+                batch_outputs.append(avg_output)
+            
+            # 合并 batch
+            batch_outputs = torch.cat(batch_outputs, dim=0)  # [B, num_classes]
+            all_outputs.append(batch_outputs.cpu())
+            all_labels.append(labels.float())
+    
+    all_output = torch.cat(all_outputs, dim=0)
+    all_label = torch.cat(all_labels, dim=0)
+    
+    _, predict = torch.max(all_output, 1)
+    accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
+    
+    matrix = confusion_matrix(all_label.numpy(), torch.squeeze(predict).float().numpy())
+    row_sums = matrix.sum(axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        acc = np.where(row_sums > 0, matrix.diagonal() / row_sums * 100, 0)
+    aacc = acc.mean()
+    aa = [str(np.round(i, 2)) for i in acc]
+    acc = ' '.join(aa)
+    
+    return aacc, acc, accuracy * 100
+
+
+def cal_acc_easy_tta(loader, netG, netC, device="cuda"):
+    """使用 TTA 计算准确率（无瓶颈层版本）
+    
+    Args:
+        loader: 数据加载器
+        netG: 特征提取器
+        netC: 分类器
+        device: 计算设备
+    
+    Returns:
+        aacc: 平均每类准确率
+        acc: 每类准确率字符串
+        accuracy: 总体准确率（百分比）
+    """
+    netG.eval()
+    netC.eval()
+    
+    all_outputs = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for data in loader:
+            inputs = data[0]  # [B, C, H, W]
+            labels = data[1]
+            
+            batch_size = inputs.size(0)
+            batch_outputs = []
+            
+            for i in range(batch_size):
+                img_tensor = inputs[i]  # [C, H, W]
+                sample_outputs = []
+                
+                for flip in [False, True]:
+                    if flip:
+                        aug_tensor = torch.flip(img_tensor, dims=[2])
+                    else:
+                        aug_tensor = img_tensor
+                    
+                    _, h, w = aug_tensor.shape
+                    crop_size = 224
+                    
+                    crops = [
+                        (0, 0), (w - crop_size, 0), (0, h - crop_size),
+                        (w - crop_size, h - crop_size), ((w - crop_size) // 2, (h - crop_size) // 2),
+                    ]
+                    
+                    for x, y in crops:
+                        cropped = aug_tensor[:, y:y+crop_size, x:x+crop_size]
+                        cropped = cropped.unsqueeze(0).to(device)
+                        
+                        output = netC(netG(cropped))
+                        output = F.softmax(output, dim=1)
+                        sample_outputs.append(output)
+                
+                avg_output = torch.stack(sample_outputs, dim=0).mean(dim=0)
+                batch_outputs.append(avg_output)
+            
+            batch_outputs = torch.cat(batch_outputs, dim=0)
+            all_outputs.append(batch_outputs.cpu())
+            all_labels.append(labels.float())
+    
+    all_output = torch.cat(all_outputs, dim=0)
+    all_label = torch.cat(all_labels, dim=0)
+    
+    _, predict = torch.max(all_output, 1)
+    accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
+    
+    matrix = confusion_matrix(all_label.numpy(), torch.squeeze(predict).float().numpy())
+    row_sums = matrix.sum(axis=1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        acc = np.where(row_sums > 0, matrix.diagonal() / row_sums * 100, 0)
+    aacc = acc.mean()
+    aa = [str(np.round(i, 2)) for i in acc]
+    acc = ' '.join(aa)
+    
+    return aacc, acc, accuracy * 100
