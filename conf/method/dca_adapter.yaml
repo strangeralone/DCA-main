@@ -1,5 +1,5 @@
-# DCA + CLIP Adapter 方法配置
-# Dual Classifier Adaptation with CLIP Visual Adapter
+# DCA + CoOp + CLIP Adapter 方法配置
+# Dual Classifier Adaptation with CoOp + Visual Adapter (双端适应)
 
 name: "dca_adapter"
 trainer: "core.dca_adapter"
@@ -25,19 +25,33 @@ target:
   early_stop: true
   early_stop_patience: 3
 
-# ========== CLIP Adapter 特有配置 ==========
+# ========== CoOp + Adapter 配置 ==========
 adapter:
-  model: "ViT-B/32"           # CLIP 模型
+  # CLIP 模型
+  model: "ViT-B/32"
+  
+  # Adapter 配置（视觉端）
   bottleneck_ratio: 4         # Adapter bottleneck 压缩比
-  residual_ratio: 0.2         # 残差连接权重 (α)
+  residual_ratio: 0.2         # 残差连接权重
   adapter_lr: 0.001           # Adapter 学习率
+  
+  # CoOp 配置（文本端）
+  n_ctx: 4                    # 可学习的 prompt token 数量
+  ctx_init: "a_photo_of_a"    # 初始化文本
+  class_token_position: "end" # 类别 token 位置
+  prompt_lr: 0.001            # Prompt 学习率
+  
+  # 蒸馏配置
   temperature: 100            # CLIP 相似度温度
-  loss_weight: 0.1            # Adapter 蒸馏损失权重
+  loss_weight: 0.5            # CLIP 蒸馏损失权重（提高到 0.5）
+  
+  # 难样本选择
+  entropy_ratio: 0.15         # 熵阈值
+  top_k_ratio: 0.35           # 分歧 top k%
   
   # 高置信度样本选择
-  high_conf_threshold: 0.3    # 熵阈值 = ln(K) * threshold
-  consistency_threshold: 0.8  # C/D 预测一致性阈值
+  high_conf_threshold: 0.3    # 熵阈值
+  consistency_threshold: 0.8  # C/D 一致性阈值
   
-  # 训练策略
-  adapter_tuning_steps: 20    # 每轮 Adapter 训练步数
-  warmup_epochs: 2            # 前几轮只训练 DCA，不训练 Adapter
+  # 训练策略（去掉 warmup，从第一轮开始用 CLIP）
+  tuning_steps: 20            # 每轮 Prompt + Adapter 训练步数
