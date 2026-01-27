@@ -1,0 +1,43 @@
+# DCA + CLIP Adapter 方法配置
+# Dual Classifier Adaptation with CLIP Visual Adapter
+
+name: "dca_adapter"
+trainer: "core.dca_adapter"
+
+# ========== 损失函数权重 ==========
+lamda: 0.45
+cls_par: 0.15
+alpha: 0.5
+mix: 0.5
+
+# ========== 源域训练配置 ==========
+source:
+  max_epoch: 40
+  smooth: 0.1
+  split: 0.9
+  trte: "val"
+  interval: 4
+
+# ========== 目标域适应配置 ==========
+target:
+  max_epoch: 15
+  interval: 10
+  early_stop: true
+  early_stop_patience: 3
+
+# ========== CLIP Adapter 特有配置 ==========
+adapter:
+  model: "ViT-B/32"           # CLIP 模型
+  bottleneck_ratio: 4         # Adapter bottleneck 压缩比
+  residual_ratio: 0.2         # 残差连接权重 (α)
+  adapter_lr: 0.001           # Adapter 学习率
+  temperature: 100            # CLIP 相似度温度
+  loss_weight: 0.1            # Adapter 蒸馏损失权重
+  
+  # 高置信度样本选择
+  high_conf_threshold: 0.3    # 熵阈值 = ln(K) * threshold
+  consistency_threshold: 0.8  # C/D 预测一致性阈值
+  
+  # 训练策略
+  adapter_tuning_steps: 20    # 每轮 Adapter 训练步数
+  warmup_epochs: 2            # 前几轮只训练 DCA，不训练 Adapter

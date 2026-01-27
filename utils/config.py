@@ -102,10 +102,10 @@ def get_arg_parser() -> argparse.ArgumentParser:
     
     # 任务参数
     parser.add_argument('--method', type=str, default='dca',
-                        choices=['dca', 'dca_clip', 'dca_coop', 'multi_prompt', 'dca_coop_multi'],
+                        choices=['dca', 'dca_clip', 'dca_coop', 'dca_adapter','multi_prompt', 'dca_coop_multi'],
                         help='训练方法: dca, dca_clip, dca_coop, multi_prompt, dca_coop_multi')
     parser.add_argument('--dataset', type=str, default='officehome',
-                        choices=['officehome', 'office'],
+                        choices=['officehome', 'office', 'domainnet126'],
                         help='数据集名称')
     parser.add_argument('--source', '-s', type=int, default=0,
                         help='源域索引 (0-3 for officehome, 0-2 for office)')

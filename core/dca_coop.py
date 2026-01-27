@@ -462,10 +462,10 @@ class DCACoOpTrainer(DCATrainer):
         early_stop_patience = target_config.get('early_stop_patience', 3)
         early_stop_enabled = target_config.get('early_stop', True)
         
-        lamda = self.method_config.get('lamda', 0.45)
-        cls_par = self.method_config.get('cls_par', 0.15)
-        alpha = self.method_config.get('alpha', 0.5)
-        mix = self.method_config.get('mix', 0.5)
+        lamda = self.method_config.get('lamda', 0.45) # 熵损失去权重，越大模型越不确定
+        cls_par = self.method_config.get('cls_par', 0.15) # 伪标签分类损失权重，控制模型多大程度相信伪标签
+        alpha = self.method_config.get('alpha', 0.5) # 两个C/D分类器的平衡系数
+        mix = self.method_config.get('mix', 0.5) # MixUp增强权重
         lr = self.config.get('lr', 0.01)
         
         # 输出目录
@@ -574,6 +574,8 @@ class DCACoOpTrainer(DCATrainer):
             softmax_out2 = nn.Softmax(dim=1)(outputs2)
             
             loss_skl = torch.mean(torch.sum(SKL(softmax_out1, softmax_out2), dim=1))
+            # SKL, 衡量两个概率分布的差异
+            # torch.sum 在“类别”这个维度上把差异加起来
             total_loss1 += loss_skl * 0.1
             
             loss_ent = entropy(self.netD, features_d, lamda)
@@ -597,7 +599,7 @@ class DCACoOpTrainer(DCATrainer):
             pred1 = mem_label1[tar_idx]
             pred2 = mem_label2[tar_idx]
             
-            classifier_loss1 = nn.CrossEntropyLoss()(outputs1, pred1)
+            classifier_loss1 = nn.CrossEntropyLoss()(outputs1, pred1) # 标量
             classifier_loss2 = nn.CrossEntropyLoss()(outputs2, pred2)
             
             # 不确定性加权
@@ -607,9 +609,12 @@ class DCACoOpTrainer(DCATrainer):
             softmax_out2_stable = torch.clamp(softmax_out2, min=1e-8)
             variance1 = torch.sum(kl_distance(log_sm(outputs1), softmax_out2_stable), dim=1)
             variance2 = torch.sum(kl_distance(log_sm(outputs2), softmax_out1_stable), dim=1)
+            # 值越大代表差异越大，模型越不确定
             
             exp_variance1 = torch.mean(torch.exp(-variance1))
             exp_variance2 = torch.mean(torch.exp(-variance2))
+            # exp_variance1 代表平均权重，值越小代表确定，权重高
+            # 映射回全概率
             
             # 两阶段 CoOp 蒸馏：使用缓存的文本特征（Prompt 在独立阶段已训练）
             loss_coop = torch.tensor(0.0).to(self.device)
@@ -750,39 +755,6 @@ class DCACoOpTrainer(DCATrainer):
         
         # 写入结束时间
         self._write_end_time(log_file, start_time)
-        
-        # TTA 最终评估（加载最佳模型）
-        if self.config.get('use_tta', True):
-            print("\n进行 TTA 最终评估...")
-            log_file.write("\n" + "=" * 60 + "\n")
-            log_file.write("🎯 TTA 最终评估\n")
-            log_file.write("=" * 60 + "\n")
-            
-            # 加载最佳模型
-            if self.config.get('savemodel', True):
-                self.netG.load_state_dict(torch.load(osp.join(output_dir, "target_G.pt"), map_location=self.device))
-                self.netF.load_state_dict(torch.load(osp.join(output_dir, "target_F.pt"), map_location=self.device))
-                self.netC.load_state_dict(torch.load(osp.join(output_dir, "target_C.pt"), map_location=self.device))
-                self.netD.load_state_dict(torch.load(osp.join(output_dir, "target_D.pt"), map_location=self.device))
-            
-            self.netG.eval()
-            self.netF.eval()
-            
-            # 普通评估
-            _, _, acc_normal = cal_acc(dset_loaders["test"], self.netG, self.netF, self.netC, device=self.device)
-            
-            # TTA 评估
-            _, _, acc_tta = cal_acc_tta(dset_loaders["test"], self.netG, self.netF, self.netC, device=self.device)
-            
-            improvement = acc_tta - acc_normal
-            log_file.write(f"普通评估: {acc_normal:.2f}%\n")
-            log_file.write(f"TTA 评估: {acc_tta:.2f}%\n")
-            log_file.write(f"TTA 提升: {improvement:+.2f}%\n")
-            log_file.write("=" * 60 + "\n")
-            log_file.flush()
-            
-            print(f"TTA 评估完成: {acc_normal:.2f}% -> {acc_tta:.2f}% ({improvement:+.2f}%)")
-            best_acc = max(best_acc, acc_tta)
-        
+    
         print(f"目标域适应完成 (带 CoOp): {task_name}! 最佳准确率: {best_acc:.2f}%")
         return output_dir
